@@ -275,7 +275,7 @@ class Monomial(collections.namedtuple("Monomial", "coeff variablepowers")):
     newctr[variable] -= 1
     return Monomial(newcoeff, newctr)
   def __str__(self):
-    return "{}*{}".format(self.coeff, self.variablepowers)
+    return "{!r}*{}".format(self.coeff, self.variablepowers)
 
   def permutevariables(self, permutationdict):
     return Monomial(self.coeff, self.variablepowers.permutevariables(permutationdict))
