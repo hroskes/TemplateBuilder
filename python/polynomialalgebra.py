@@ -341,8 +341,6 @@ class PolynomialBase(object):
           if power == self.maxvariablepower:
             sawmaxpower[letter] = True
 
-    print sawmaxpower; raw_input()
-
     result = ExplicitPolynomial(monomials, self.variableletters).dehomogenize()
 
     for letter in self.variableletters:
@@ -643,7 +641,6 @@ class PolynomialBase(object):
     best = None
     signs = {1: [], -1: [], 0: []}
     for permutation in permutations_differentonesfirst(xand1):
-      print permutation
       permutationdict = {orig: new for orig, new in itertools.izip(xand1, permutation)}
       try:
         result = self.minimize_permutation(permutationdict=permutationdict, **kwargs)
