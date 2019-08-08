@@ -740,6 +740,8 @@ class DegeneratePolynomialError(ValueError):
   def __init__(self, polynomial, variable, power):
     super(DegeneratePolynomialError, self).__init__("Can't find the boundary polynomial of {} because it doesn't have a nonzero {}^{} term".format(polynomial, variable, power))
 
+class NoCoeffGapError(ValueError): pass
+
 class NoCriticalPointsError(ValueError):
   def __init__(self, coeffs, moremessage=None, solutions=None):
     message = "error finding critical points for polynomial: {}".format(coeffs)
