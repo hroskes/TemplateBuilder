@@ -248,6 +248,7 @@ class VariablePowers(collections.Counter):
   def permutevariables(self, permutationdict):
     return VariablePowers(permutationdict[variable] for variable in self.elements())
 
+
 class Monomial(collections.namedtuple("Monomial", "coeff variablepowers")):
   def __new__(cls, coeff, variablepowers):
     variablepowers = VariablePowers(variablepowers)
@@ -370,6 +371,29 @@ class PolynomialBase(object):
     removevariable = self.variableletters[0]
     return ExplicitPolynomial((monomial.dehomogenize(removevariable) for monomial in self.monomials), self.variableletters[1:])
 
+  def setsmallestcoefficientsto0(self):
+    coeffs = np.array([m.coeff for m in self.monomials])
+    newcoeffs = []
+    setto0 = []
+    newmonomials = []
+    biggest = max(abs(coeffs))
+    smallest = min(abs(coeffs[np.nonzero(coeffs)]))
+    for monomial in self.monomials:
+      coeff = monomial.coeff
+      if coeff == 0 or np.log(biggest / abs(coeff)) < np.log(abs(coeff) / smallest):
+        newcoeffs.append(coeff)
+        newmonomials.append(monomial)
+      else:
+        setto0.append(coeff)
+        newcoeffs.append(0)
+        newmonomials.append(Monomial(0, monomial.variablepowers))
+    newcoeffs = np.array(newcoeffs)
+    setto0 = np.array(setto0)
+    if np.log10(min(abs(newcoeffs[np.nonzero(newcoeffs)])) / max(abs(setto0))) < np.log10(biggest / smallest) / 3:
+      #no big gap between the big ones and the small ones
+      raise NoCoeffGapError
+    return ExplicitPolynomial(newmonomials, self.variableletters)
+
   def findcriticalpoints(self, verbose=False, cmdlinestotry=("smallparalleltdeg",), homogenizecoeffs=None, boundarycriticalpoints=[], setsmallestcoefficientsto0=False):
     if self.degree == 2:
       variableletters = getnvariableletters(n)
@@ -474,23 +498,9 @@ class PolynomialBase(object):
           solutions = [solution[1:] / solution[0] for solution in solutions]
         return solutions
 
-      """
       if setsmallestcoefficientsto0:
-        newcoeffs = []
-        setto0 = []
-        biggest = max(abs(coeffs))
-        smallest = min(abs(coeffs[np.nonzero(coeffs)]))
-        for coeff in coeffs:
-          if coeff == 0 or np.log(biggest / abs(coeff)) < np.log(abs(coeff) / smallest):
-            newcoeffs.append(coeff)
-          else:
-            setto0.append(coeff)
-            newcoeffs.append(0)
-        newcoeffs = np.array(newcoeffs)
-        setto0 = np.array(setto0)
-        if np.log10(min(abs(newcoeffs[np.nonzero(newcoeffs)])) / max(abs(setto0))) > np.log10(biggest / smallest) / 3: #if there's a big gap
-          if verbose: print "trying again after setting the smallest coefficients to 0:\n{}".format(setto0)
-          newsolutions = findcriticalpointspolynomialnd(d, n, newcoeffs, verbose=verbose, cmdlinestotry=cmdlinestotry, homogenizecoeffs=homogenizecoeffs, boundarycriticalpoints=boundarycriticalpoints)
+        try:
+          newsolutions = self.setsmallestcoefficientsto0().findcriticalpoints(verbose=verbose, cmdlinestotry=cmdlinestotry, homogenizecoeffs=homogenizecoeffs, boundarycriticalpoints=boundarycriticalpoints)
           for oldsolution in solutions:
             if verbose: print "checking if old solution {} is still here".format(oldsolution)
             if not any(np.allclose(oldsolution, newsolution, **allclosekwargs) for newsolution in newsolutions):
@@ -499,9 +509,9 @@ class PolynomialBase(object):
             if verbose: print "it is"
           else:  #removing this coefficient didn't mess up the old solutions
             return newsolutions
-        else:
+        except NoCoeffGapError:
           if verbose: print "can't set the smallest coefficients to 0, there's not a clear separation between big and small:\nbig candidates:{} --> range = {} - {}\nsmall candidates: {} --> range = {} - {}\n\nmore info: {} {}".format(newcoeffs[np.nonzero(newcoeffs)], min(abs(newcoeffs[np.nonzero(newcoeffs)])), max(abs(newcoeffs)), setto0, min(abs(setto0)), max(abs(setto0)), np.log10(min(abs(newcoeffs[np.nonzero(newcoeffs)])) / max(abs(setto0))), np.log10(biggest / smallest))
-      """
+
     else:
       solutions=None
 
