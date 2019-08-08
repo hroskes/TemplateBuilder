@@ -108,6 +108,12 @@ class Hom4PSResult(object):
       if np.all(np.isclose(solution1, solution2, rtol=1e-7, atol=1e-10)):
         result += 1
     return result
+  @property
+  def variableorder(self):
+    paragraphs = iter(self.stdout.split("\n\n"))
+    for paragraph in paragraphs:
+      if "The solution values are listed with the variables in the following order:" in paragraph: break
+    return tuple(next(paragraphs).split())
 
 class Hom4PSRuntimeError(Hom4PSResult, RuntimeError):
   @abc.abstractproperty

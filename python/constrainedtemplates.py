@@ -19,14 +19,15 @@ class BadFitStatusException(Exception):
 def ConstrainedTemplates(constrainttype, *args, **kwargs):
   return {
     "unconstrained": OneTemplate,
-    "oneparameterggH": OneParameterggH,
-    "oneparameterVVH": OneParameterVVH,
-    "threeparameterggH": ThreeParameterggH,
-    "fourparameterggH": FourParameterggH,
-    "fourparameterVVH": FourParameterVVH,
-    "fourparameterWWH": FourParameterWWH,
-    "fourparameterVVH_nog4int": FourParameterVVH_nog4int,
-    "fourparameterWWH_nog4int": FourParameterWWH_nog4int,
+    "oneparameterHVV": OneParameterHVV,
+    "oneparameterVVHVV": OneParameterVVHVV,
+    "threeparameterHVV": ThreeParameterHVV,
+    "twobythreeparameterggHVV": TwoByThreeParameterggHVV,
+    "fourparameterHVV": FourParameterHVV,
+    "fourparameterVVHVV": FourParameterVVHVV,
+    "fourparameterWWHVV": FourParameterWWHVV,
+    "fourparameterVVHVV_nog4int": FourParameterVVHVV_nog4int,
+    "fourparameterWWHVV_nog4int": FourParameterWWHVV_nog4int,
   }[constrainttype](*args, **kwargs)
 
 class ConstrainedTemplatesBase(object):
@@ -517,20 +518,20 @@ class ConstrainedTemplatesWithFit(ConstrainedTemplatesBase):
 
   defaultmaxiter = 2000
 
-class OneParameterggH(ConstrainedTemplatesWithFit):
+class OneParameterHVV(ConstrainedTemplatesWithFit):
   templatenames = "SM", "int", "BSM"
   pureindices = 0, 2
   cuttingplanefunction = staticmethod(cuttingplanemethod1dquadratic)
   cuttingplanehaspermutations = False
   defaultmaxiter = 2000
 
-class OneParameterVVH(ConstrainedTemplatesWithFit):
+class OneParameterVVHVV(ConstrainedTemplatesWithFit):
   templatenames = "SM", "g13gi1", "g12gi2", "g11gi3", "BSM"
   pureindices = 0, 4
   cuttingplanefunction = staticmethod(cuttingplanemethod1dquartic)
   cuttingplanehaspermutations = False
 
-class ThreeParameterggH(ConstrainedTemplatesWithFit):
+class ThreeParameterHVV(ConstrainedTemplatesWithFit):
   templatenames = (
     "SM", "g11gj1", "g11gk1", "g11gl1",
     "j",  "gj1gk1", "gj1gl1",
@@ -542,7 +543,29 @@ class ThreeParameterggH(ConstrainedTemplatesWithFit):
   cuttingplanehaspermutations = True
   defaultmaxiter = 2000
 
-class FourParameterggH(ConstrainedTemplatesWithFit):
+class TwoByThreeParameterggHVV(ConstrainedTemplatesWithFit):
+  templatenames = (
+    "SM_SM", "SM_g11gj1", "SM_g11gk1", "SM_g11gl1",
+    "SM_j",  "SM_gj1gk1", "SM_gj1gl1",
+    "SM_k",  "SM_gk1gl1",
+    "SM_l",
+
+    "G1GI_SM", "G1GI_g11gj1", "G1GI_g11gk1", "G1GI_g11gl1",
+    "G1GI_j",  "G1GI_gj1gk1", "G1GI_gj1gl1",
+    "G1GI_k",  "G1GI_gk1gl1",
+    "G1GI_l",
+
+    "GI_SM", "GI_g11gj1", "GI_g11gk1", "GI_g11gl1",
+    "GI_j",  "GI_gj1gk1", "GI_gj1gl1",
+    "GI_k",  "GI_gk1gl1",
+    "GI_l",
+  )
+  pureindices = ()
+  cuttingplanefunction = staticmethod(cuttingplanemethod2dquadraticby3dquadratic)
+  cuttingplanehaspermutations = True
+  defaultmaxiter = 2000
+
+class FourParameterHVV(ConstrainedTemplatesWithFit):
   templatenames = (
     "SM", "g11gi1", "g11gj1", "g11gk1", "g11gl1",
     "i",  "gi1gj1", "gi1gk1", "gi1gl1",
@@ -555,7 +578,7 @@ class FourParameterggH(ConstrainedTemplatesWithFit):
   cuttingplanehaspermutations = True
   defaultmaxiter = 2000
 
-class FourParameterVVH(ConstrainedTemplatesWithFit):
+class FourParameterVVHVV(ConstrainedTemplatesWithFit):
   templatenames = (
     "SM",
     "g13gi1", "g13gj1",    "g13gk1",       "g13gl1",
@@ -635,22 +658,22 @@ class FourParameterVVH(ConstrainedTemplatesWithFit):
   gZ34indices = tuple(i for i, _ in enumerate(templatenames) if "gl3" in _ or _ == "l")
   cuttingplanehaspermutations = True
 
-class FourParameterWWH(ConstrainedTemplatesWithFit):
+class FourParameterWWHVV(ConstrainedTemplatesWithFit):
   #https://stackoverflow.com/q/13905741/5228524
-  templatenames = tuple(name for i, name in enumerate(FourParameterVVH.templatenames) if i not in FourParameterVVH.gZ34indices)
+  templatenames = tuple(name for i, name in enumerate(FourParameterVVHVV.templatenames) if i not in FourParameterVVHVV.gZ34indices)
   pureindices = tuple(
-    index - sum(1 for i in FourParameterVVH.gZ34indices if i < index)
-    for index in FourParameterVVH.pureindices
-    if index not in FourParameterVVH.gZ34indices
+    index - sum(1 for i in FourParameterVVHVV.gZ34indices if i < index)
+    for index in FourParameterVVHVV.pureindices
+    if index not in FourParameterVVHVV.gZ34indices
   )
   cuttingplanefunction = staticmethod(cuttingplanemethod4dquartic_4thvariablequadratic)
   cuttingplanehaspermutations = True
 
-class FourParameterVVH_nog4int(ConstrainedTemplatesWithFit):
-  templatenames = tuple(name for name in FourParameterVVH.templatenames if "gi1" not in name and "gi3" not in name)
+class FourParameterVVHVV_nog4int(ConstrainedTemplatesWithFit):
+  templatenames = tuple(name for name in FourParameterVVHVV.templatenames if "gi1" not in name and "gi3" not in name)
   pureindices = tuple(
-    index - sum(1 for i, name in enumerate(FourParameterVVH.templatenames) if i < index and ("gi1" in name or "gi3" in name))
-    for index in FourParameterVVH.pureindices
+    index - sum(1 for i, name in enumerate(FourParameterVVHVV.templatenames) if i < index and ("gi1" in name or "gi3" in name))
+    for index in FourParameterVVHVV.pureindices
   )
   def cuttingplanefunction(self, x0, sigma, *args, **kwargs):
     if np.all(x0[self.gZ34indices,] == 0): #this happens for VBF when there are no reweighted ZZ fusion events in the bin
@@ -676,11 +699,11 @@ class FourParameterVVH_nog4int(ConstrainedTemplatesWithFit):
   gZ34indices = tuple(i for i, _ in enumerate(templatenames) if "gl3" in _ or _ == "l")
   cuttingplanehaspermutations = True
 
-class FourParameterWWH_nog4int(ConstrainedTemplatesWithFit):
-  templatenames = tuple(name for name in FourParameterWWH.templatenames if "gi1" not in name and "gi3" not in name)
+class FourParameterWWHVV_nog4int(ConstrainedTemplatesWithFit):
+  templatenames = tuple(name for name in FourParameterWWHVV.templatenames if "gi1" not in name and "gi3" not in name)
   pureindices = tuple(
-    index - sum(1 for i, name in enumerate(FourParameterWWH.templatenames) if i < index and ("gi1" in name or "gi3" in name))
-    for index in FourParameterWWH.pureindices
+    index - sum(1 for i, name in enumerate(FourParameterWWHVV.templatenames) if i < index and ("gi1" in name or "gi3" in name))
+    for index in FourParameterWWHVV.pureindices
   )
   cuttingplanefunction = staticmethod(cuttingplanemethod4dquartic_4thvariablequadratic_1stvariableonlyeven)
   cuttingplanehaspermutations = True

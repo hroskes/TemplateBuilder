@@ -14,10 +14,7 @@ will be a number less than -1e6, with some set of xs that produce that result.
 
 from __future__ import division
 
-import collections
-import functools
-import itertools
-import subprocess
+import abc, collections, functools, itertools, subprocess
 
 import numpy as np
 
@@ -212,207 +209,529 @@ def minimizequartic(coeffs):
     linearconstraint = np.array([1, x, x**2, x**3, x**4]),
   )
 
-
-
-def getpolynomialnd(d, n, coeffs, mirrorindices=()):
-  mirrorarray = np.array([-1 if i in mirrorindices else 1 for i in xrange(n)])
-  def polynomialnd(x):
-    assert len(x) == n
-    xand1 = np.concatenate(([1.], mirrorarray*x))
-    return sum(
-      np.prod((coeff,) + xs)
-      for coeff, xs in itertools.izip_longest(
-        coeffs,
-        itertools.combinations_with_replacement(xand1, d),
-      )
-    )
-  polynomialnd.__name__ = "polynomial{}degree{}d".format(d, n)
-  return polynomialnd
-
 def getnvariableletters(n):
   return "abcdefghijklmnopqrstuvwxyz"[-n:]
 
-def getpolynomialndmonomials(d, n, coeffs=None, mirrorindices=()):
-  xand1 = "1" + getnvariableletters(n)
-  assert len(xand1) == n+1
-  mirrorarray = np.concatenate(([1.], [-1 if i in mirrorindices else 1 for i in xrange(n)]))
+class VariablePowers(collections.Counter):
+  def __hash__(self):
+    return hash(frozenset(i for i in self.items() if i != "1"))
+  def __eq__(self, other):
+    return set(i for i in self.items() if i != "1") == set(i for i in other.items() if i != "1")
+  def __ne__(self, other):
+    return not self == other
 
-  for coeff, xsandmirrors in itertools.izip_longest(
-    coeffs if coeffs is not None else (),
-    itertools.combinations_with_replacement(itertools.izip_longest(xand1, mirrorarray), d),
-  ):
-    if (coeffs is not coeff is None) or xsandmirrors is None:
-      raise RuntimeError("Provided {} coefficients, need {}".format(len(coeffs), len(list(itertools.combinations_with_replacement(xand1, d)))))
-    xs, mirrors = itertools.izip(*xsandmirrors)
-    ctr = collections.Counter(xs)
-    if coeffs is None:
-      yield ctr
+  @property
+  def degree(self): return sum(1 for variable in self.elements() if variable != "1")
+  @property
+  def maxvariablepower(self):
+    return max(itertools.chain([0], (power for variable, power in self.items() if variable != "1")))
+  def __call__(self, **variablevalues):
+    variablevalues["1"] = 1
+    return np.prod([variablevalues[variable] for variable in self.elements()])
+
+  def __str__(self):
+    if not any(self.values()): return "1"
+    return "*".join(self.elements())
+
+  def homogenize(self, withvariable, todegree):
+    if self.degree == todegree or not self: return self
+    assert self.degree < todegree
+    newctr = VariablePowers(self)
+    if withvariable != "1": assert withvariable not in newctr
+    newctr[withvariable] = todegree - self.degree
+    return newctr
+  def dehomogenize(self, withvariable):
+    newctr = VariablePowers(self)
+    newctr[withvariable] = 0
+    if not any(newctr.values()): newctr["1"] = 1
+    return VariablePowers(newctr)
+  def permutevariables(self, permutationdict):
+    return VariablePowers(permutationdict[variable] for variable in self.elements())
+
+class Monomial(collections.namedtuple("Monomial", "coeff variablepowers")):
+  def __new__(cls, coeff, variablepowers):
+    variablepowers = VariablePowers(variablepowers)
+
+    return super(Monomial, cls).__new__(cls, coeff, variablepowers)
+
+  @property
+  def degree(self):
+    return self.variablepowers.degree
+  @property
+  def maxvariablepower(self):
+    return self.variablepowers.maxvariablepower
+  def __nonzero__(self):
+    if isinstance(self.coeff, np.ndarray):
+      return bool(np.any(self.coeff))
     else:
-      yield coeff * np.prod(mirrors), ctr
+      return bool(self.coeff)
+
+  def __call__(self, **variablevalues):
+    return self.coeff * self.variablepowers(**variablevalues)
+  def derivative(self, variable):
+    newctr = collections.Counter(self.variablepowers)
+    newcoeff = self.coeff * newctr[variable]
+    newctr[variable] -= 1
+    return Monomial(newcoeff, newctr)
+  def __str__(self):
+    return "{}*{}".format(self.coeff, self.variablepowers)
+
+  def permutevariables(self, permutationdict):
+    return Monomial(self.coeff, self.variablepowers.permutevariables(permutationdict))
+  def homogenize(self, withvariable, todegree):
+    return Monomial(self.coeff, self.variablepowers.homogenize(withvariable, todegree))
+  def dehomogenize(self, withvariable):
+    return Monomial(self.coeff, self.variablepowers.dehomogenize(withvariable))
+
+class PolynomialBase(object):
+  def __init__(self):
+    self.__nmonomials = sum(1 for m in self.monomials)
+    self.__degree = max(monomial.degree for monomial in self.monomials)
+    self.__maxvariablepower = max(monomial.maxvariablepower for monomial in self.monomials)
+    allvariables = set(itertools.chain(*(monomial.variablepowers.elements() for monomial in self.monomials)))
+    allvariables.discard("1")
+
+    self.__nvariables = len(allvariables)
+    for letter in allvariables:
+      if letter not in self.variableletters: raise ValueError("monomial letter {!r} is invalid, should be one of {}".format(letter, self.variableletters))
+
+    seen = set()
+    for monomial in self.monomials:
+      if monomial.variablepowers in seen:
+        raise ValueError("Got a duplicate monomial: {}".format(variablepowers))
+      seen.add(monomial.variablepowers)
+
+  @abc.abstractproperty
+  def monomials(self): "list of Monomial objects"
+
+  @property
+  def nmonomials(self): return self.__nmonomials
+  @property
+  def degree(self): return self.__degree
+  @property
+  def maxvariablepower(self): return self.__maxvariablepower
+
+  @property
+  def ishomogeneous(self): return all(m.degree == self.degree for m in self.monomials if m)
+
+  @property
+  def nvariables(self): return self.__nvariables
+
+  @abc.abstractproperty
+  def variableletters(self): pass
+
+  def __call__(self, variablearray=None, **kwargs):
+    if variablearray is not None:
+      if kwargs:
+        raise TypeError("Can't provide both variablearray and kwargs")
+      assert len(variablearray) == self.nvariables
+      kwargs = {letter: x for letter, x in itertools.izip_longest(self.variableletters, variablearray)}
+    return sum(monomial(**kwargs) for monomial in self.monomials)
+
+  @property
+  def boundarypolynomial(self):
+    monomials = []
+    sawmaxpower = {letter: False for letter in self.variableletters}
+    for monomial in self.monomials:
+      if monomial.degree < self.degree: continue
+      monomials.append(monomial)
+      if monomial:
+        for letter, power in monomial.variablepowers.iteritems():
+          if power == self.maxvariablepower:
+            sawmaxpower[letter] = True
+
+    print sawmaxpower; raw_input()
+
+    result = ExplicitPolynomial(monomials, self.variableletters).dehomogenize()
+
+    for letter in result.variableletters:
+      if not sawmaxpower[letter]:
+        raise DegeneratePolynomialError(self, letter, self.maxvariablepower)
+
+    return result
+
+  def derivative(self, variable):
+    return ExplicitPolynomial((monomial.derivative(variable) for monomial in self.monomials), self.variableletters)
+
+  def permutevariables(self, permutationdict):
+    return ExplicitPolynomial((monomial.permutevariables(permutationdict) for monomial in self.homogenize("1").monomials), self.variableletters)
+
+  @property
+  def gradient(self):
+    return [self.derivative(variable) for variable in self.variableletters]
+
+  def __str__(self):
+    return " + ".join(str(m) for m in self.monomials if m)
+
+  def homogenize(self, withvariable):
+    return ExplicitPolynomial((monomial.homogenize(withvariable, self.degree) for monomial in self.monomials), self.variableletters + (withvariable,))
+  def dehomogenize(self):
+    if not self.ishomogeneous: raise ValueError("Can't dehomogenize\n{}\nwhich isn't homogeneous".format(self))
+    removevariable = self.variableletters[0]
+    return ExplicitPolynomial((monomial.dehomogenize(removevariable) for monomial in self.monomials), self.variableletters[1:])
+
+  def findcriticalpoints(self, verbose=False, cmdlinestotry=("smallparalleltdeg",), homogenizecoeffs=None, boundarycriticalpoints=[], setsmallestcoefficientsto0=False):
+    if self.degree == 2:
+      variableletters = getnvariableletters(n)
+      #Ax=b
+      A = np.zeros((n, n))
+      b = np.zeros((n, 1))
+      for derivative, row, constant in itertools.izip_longest(self.gradient, A, b):
+        for coeff, xs in derivative:
+          xs = list(xs.elements())
+          assert len(xs) <= 1
+          if not xs or xs[0] == "1":
+            constant[0] = -coeff  #note - sign here!  Because the gradient should be Ax + (-b)
+          else:
+            row[variableletters.index(xs[0])] = coeff
+      return np.linalg.solve(A, b).T
+
+
+    gradient = self.gradient
+    extraequations = []
+    variableletters = self.variableletters
+
+    if homogenizecoeffs is not None:
+      gradient = [derivative.homogenize("alpha") for derivative in gradient]
+      linearpolynomial = ExplicitPolynomial(
+        (
+          Monomial(coeff, [variable]) for coeff, variable in itertools.izip_longest(
+            homogenizecoeffs,
+            itertools.chain(["alpha"], self.variableletters, ["1"])
+          )
+        ), self.variableletters+("alpha",)
+      )
+      extraequations = [str(linearpolynomial)+";"]
+
+      variableletters = ("alpha",) + variableletters
+
+    gradientstrings = [str(derivative)+";" for derivative in gradient]
+    stdin = "\n".join(["{"] + gradientstrings + extraequations + ["}"])
+
+    errors = []
+    for cmdline in cmdlinestotry:
+      try:
+        result = hom4pswrapper.runhom4ps(stdin, whichcmdline=cmdline, verbose=verbose)
+        assert result.variableorder == variableletters, (result.variableorder, variableletters)
+      except hom4pswrapper.Hom4PSTimeoutError as e:
+        pass
+      except hom4pswrapper.Hom4PSFailedPathsError as e:
+        errors.append(e)
+      except hom4pswrapper.Hom4PSDuplicateSolutionsError as e:
+        errors.append(e)
+      except hom4pswrapper.Hom4PSDivergentPathsError as e:
+        if homogenizecoeffs is None:
+          for cp in boundarycriticalpoints:
+            try:
+              newhomogenizecoeffs = np.concatenate(([1, 1], 1/cp, [1]))
+            except RuntimeWarning as runtimewarning:
+              if "divide by zero encountered in true_divide" in runtimewarning:
+                continue #can't use this cp
+            try:
+              homogenizedresult = self.findcriticalpoints(verbose=verbose, cmdlinestotry=cmdlinestotry, homogenizecoeffs=newhomogenizecoeffs, setsmallestcoefficientsto0=setsmallestcoefficientsto0)
+            except NoCriticalPointsError:
+              pass
+            else:
+              for solution in e.realsolutions:
+                if not any(np.allclose(solution, newsolution) for newsolution in homogenizedresult):
+                  break
+              else: #all old solutions are still there after homogenizing
+                return homogenizedresult
+        errors.append(e)
+      else:
+        solutions = result.realsolutions
+        if homogenizecoeffs is not None:
+          solutions = [solution[1:] / solution[0] for solution in solutions]
+        return solutions
+
+    if errors:
+      if verbose:
+        print "seeing if those calls gave different solutions, in case between them we have them all covered"
+
+      solutions = []
+      allclosekwargs = {"rtol": 1e-3, "atol": 1e-08}
+      for error in errors:
+        thesesolutions = error.realsolutions
+        if homogenizecoeffs is not None:
+          thesesolutions = [solution[1:] / solution[0] for solution in thesesolutions]
+
+        while any(closebutnotequal(first, second, **allclosekwargs) for first, second in itertools.combinations(thesesolutions, 2)):
+          allclosekwargs["rtol"] /= 2
+          allclosekwargs["atol"] /= 2
+
+        for newsolution in thesesolutions:
+          if not any(closebutnotequal(newsolution, oldsolution, **allclosekwargs) for oldsolution in solutions):
+            solutions.append(newsolution)
+
+      numberofpossiblesolutions = min(len(e.solutions) + e.nfailedpaths + e.ndivergentpaths for e in errors)
+
+      if len(solutions) > numberofpossiblesolutions:
+        raise NoCriticalPointsError(self, moremessage="found too many critical points in the union of the different configurations", solutions=solutions)
+
+      if len(solutions) == numberofpossiblesolutions:
+        if verbose: print "we do"
+        if homogenizecoeffs is not None:
+          solutions = [solution[1:] / solution[0] for solution in solutions]
+        return solutions
+
+      """
+      if setsmallestcoefficientsto0:
+        newcoeffs = []
+        setto0 = []
+        biggest = max(abs(coeffs))
+        smallest = min(abs(coeffs[np.nonzero(coeffs)]))
+        for coeff in coeffs:
+          if coeff == 0 or np.log(biggest / abs(coeff)) < np.log(abs(coeff) / smallest):
+            newcoeffs.append(coeff)
+          else:
+            setto0.append(coeff)
+            newcoeffs.append(0)
+        newcoeffs = np.array(newcoeffs)
+        setto0 = np.array(setto0)
+        if np.log10(min(abs(newcoeffs[np.nonzero(newcoeffs)])) / max(abs(setto0))) > np.log10(biggest / smallest) / 3: #if there's a big gap
+          if verbose: print "trying again after setting the smallest coefficients to 0:\n{}".format(setto0)
+          newsolutions = findcriticalpointspolynomialnd(d, n, newcoeffs, verbose=verbose, cmdlinestotry=cmdlinestotry, homogenizecoeffs=homogenizecoeffs, boundarycriticalpoints=boundarycriticalpoints)
+          for oldsolution in solutions:
+            if verbose: print "checking if old solution {} is still here".format(oldsolution)
+            if not any(np.allclose(oldsolution, newsolution, **allclosekwargs) for newsolution in newsolutions):
+              if verbose: print "it's not"
+              break  #removing this coefficient messed up one of the old solutions, so we can't trust the new ones
+            if verbose: print "it is"
+          else:  #removing this coefficient didn't mess up the old solutions
+            return newsolutions
+        else:
+          if verbose: print "can't set the smallest coefficients to 0, there's not a clear separation between big and small:\nbig candidates:{} --> range = {} - {}\nsmall candidates: {} --> range = {} - {}\n\nmore info: {} {}".format(newcoeffs[np.nonzero(newcoeffs)], min(abs(newcoeffs[np.nonzero(newcoeffs)])), max(abs(newcoeffs)), setto0, min(abs(setto0)), max(abs(setto0)), np.log10(min(abs(newcoeffs[np.nonzero(newcoeffs)])) / max(abs(setto0))), np.log10(biggest / smallest))
+      """
+    else:
+      solutions=None
+
+    raise NoCriticalPointsError(self, moremessage="there are failed and/or divergent paths, even after trying different configurations and saving mechanisms", solutions=solutions)
+
+  def minimize(self, verbose=False, **kwargs):
+    if self.nvariables == 1 and self.degree <= 4:
+      coeffs = [m.coeff for m in sorted(self.monomials, key=lambda x: x.degree)]
+      if self.degree == 0: return minimizeconstant(coeffs)
+      if self.degree == 1: return minimizelinear(coeffs)
+      if self.degree == 2: return minimizequadratic(coeffs)
+      if self.degree == 3: return minimizecubic(coeffs)
+      if self.degree == 4: return minimizequartic(coeffs)
+
+    if all(set(monomial.variablepowers) == {"1"} for monomial in self.monomials if monomial):
+      return OptimizeResult(
+        x=np.array([0]*n),
+        success=True,
+        status=2,
+        message="polynomial is constant",
+        fun=[monomial.coeff for monomial in self.monomials if monomial][0],
+        linearconstraint=np.array([1 if monomial else 0 for monomial in self.monomials])
+      )
+
+    #check the behavior around the sphere at infinity
+    boundarykwargs = kwargs.copy()
+    if kwargs.get("homogenizecoeffs") is not None:
+      boundarykwargs["homogenizecoeffs"] = kwargs["homogenizecoeffs"][1:]
+    boundarypolynomial = self.boundarypolynomial
+
+    boundaryresult = boundarypolynomial.minimize(verbose=verbose, **boundarykwargs)
+    if boundaryresult.fun < 0:
+      x = np.concatenate(([1], boundaryresult.x))
+      multiply = 1
+      while self(x*multiply) > -1e6:
+        multiply *= 10
+        if multiply > 1e30: assert False
+
+      linearconstraint = []
+      boundarylinearconstraint = iter(boundaryresult.linearconstraint)
+
+      for monomial in self.monomials:
+        if monomial.degree == self.degree:
+          linearconstraint.append(next(boundarylinearconstraint))
+        else:
+          linearconstraint.append(0)
+
+      for remaining in boundarylinearconstraint: assert False
+
+      return OptimizeResult(
+        x=x*multiply,
+        success=False,
+        status=3,
+        message="function goes to -infinity somewhere around the sphere at infinity",
+        fun=self(x*multiply),
+        linearconstraint=np.array(linearconstraint),
+        boundaryresult=boundaryresult,
+      )
+
+    assert "boundarycriticalpoints" not in kwargs
+    if hasattr(boundaryresult, "criticalpoints"):
+      kwargs["boundarycriticalpoints"] = boundaryresult.criticalpoints
+
+    criticalpoints = list(self.findcriticalpoints(verbose=verbose, **kwargs))
+    if not criticalpoints:
+      raise NoCriticalPointsError(self, moremessage="system of polynomials doesn't have any critical points")
+
+    criticalpoints.sort(key=self)
+    if verbose:
+      for cp in criticalpoints:
+        print cp, self(cp)
+    minimumx = criticalpoints[0]
+    minimum = self(minimumx)
+
+    linearconstraint = ExplicitPolynomial(
+      (Monomial(
+        np.array([1 if i==j else 0 for i in xrange(self.nmonomials)]),
+        monomial.variablepowers,
+      ) for j, monomial in enumerate(self.monomials)),
+      self.variableletters
+    )(minimumx)
+    if not np.isclose(np.dot(linearconstraint, [monomial.coeff for monomial in self.monomials]), minimum, rtol=2e-2):
+      raise ValueError("{} != {}??".format(np.dot(linearconstraint, [monomial.coeff for monomial in self.monomials]), minimum))
+
+    return OptimizeResult(
+      x=np.array(minimumx),
+      success=True,
+      status=1,
+      message="gradient is zero at {} real points".format(len(criticalpoints)),
+      fun=minimum,
+      linearconstraint=linearconstraint,
+      boundaryresult=boundaryresult,
+      criticalpoints=criticalpoints,
+    )
+
+  def indexofmonomial(self, variablepowers):
+    for i, monomial in enumerate(self.monomials):
+      if monomial.variablepowers == variablepowers:
+        return i
+    raise IndexError
+
+  def minimize_permutation(self, permutationdict, **kwargs):
+    permuted = self.permutevariables(permutationdict)
+
+    result = permuted.minimize(**kwargs)
+
+    reverse = {v: k for k, v in permutationdict.iteritems()}
+
+    if all(k == v for k, v in permutationdict.iteritems()): return result
+
+    if (
+      np.sign(np.dot(result.linearconstraint, [monomial.coeff for monomial in self.monomials])) != np.sign(result.fun)
+      and np.sign(np.dot(result.linearconstraint, [monomial.coeff for monomial in self.monomials])) != 0
+      and np.sign(result.fun) != 0
+      and not np.isclose(np.dot(result.linearconstraint, [monomial.coeff for monomial in self.monomials]), result.fun) #numerical issues occasionally give +epsilon and -epsilon when you add in different orders
+    ):
+      raise ValueError("sign({}) != sign({})??".format(np.dot(result.linearconstraint, [monomial.coeff for monomial in self.monomials]), result.fun))
+
+    return OptimizeResult(
+      permutation=permutationdict,
+      permutedresult=result,
+      fun=result.fun,
+      linearconstraint=result.linearconstraint,
+      x=(result.x, "permuted")
+    )
+
+  def minimize_permutations(self, debugprint=False, permutationmode="best", **kwargs):
+    xand1 = ("1",)+self.variableletters
+    best = None
+    signs = {1: [], -1: [], 0: []}
+    for permutation in permutations_differentonesfirst(xand1):
+      print permutation
+      permutationdict = {orig: new for orig, new in itertools.izip(xand1, permutation)}
+      try:
+        result = self.minimize_permutation(permutationdict=permutationdict, **kwargs)
+      except (NoCriticalPointsError, DegeneratePolynomialError):
+        continue
+
+      #want this to be small
+      nonzerolinearconstraint = result.linearconstraint[np.nonzero(result.linearconstraint)]
+      figureofmerit = (result.fun >= 0), len(result.linearconstraint) - len(nonzerolinearconstraint), sum(np.log(abs(nonzerolinearconstraint))**2)
+
+      if debugprint:
+        print "---------------------------------"
+        print result.linearconstraint
+        print figureofmerit
+
+      if best is None or figureofmerit < best[3]:
+        best = permutation, permutationdict, result, figureofmerit
+        if debugprint: print "new best"
+
+      if debugprint: print "---------------------------------"
+
+      signs[np.sign(result.fun)].append(permutation)
+      if {
+        "best": result.fun > 0 or figureofmerit <= (False, 0, 50),
+        "asneeded": True,
+        "best_gothroughall": False,
+      }[permutationmode]:
+        break
+
+    if best is None:
+      if "setsmallestcoefficientsto0" not in kwargs:
+        kwargs["setsmallestcoefficientsto0"] = True
+        return self.minimize_permutations(debugprint=debugprint, permutationmode=permutationmode, **kwargs)
+      if "cmdlinestotry" not in kwargs:
+        kwargs["cmdlinestotry"] = "smallparalleltdeg", "smallparalleltdegstepctrl", "smallparallel"#, "easy"
+        return self.minimize_permutations(debugprint=debugprint, permutationmode=permutationmode, **kwargs)
+      raise NoCriticalPointsError("Couldn't minimize polynomial under any permutation:\n{}".format(coeffs))
+
+    permutation, permutationdict, result, figureofmerit = best
+
+    #import pprint; pprint.pprint(signs)
+
+    return result
+
+  def minimize_permutationsasneeded(self, *args, **kwargs):
+    return self.minimize_permutations(*args, permutationmode="asneeded", **kwargs)
+
+
+
+class PolynomialBaseStandardLetters(PolynomialBase):
+  @property
+  def variableletters(self):
+    return tuple(getnvariableletters(self.nvariables))
+
+class ExplicitPolynomial(PolynomialBase):
+  def __init__(self, monomials, variableletters):
+    self.__monomials = tuple(monomials)
+    self.__variableletters = tuple(variableletters)
+    super(ExplicitPolynomial, self).__init__()
+  @property
+  def monomials(self): return self.__monomials
+  @property
+  def variableletters(self): return self.__variableletters
+
+class PolynomialBaseProvideCoeffs(PolynomialBase):
+  def __init__(self, coeffs):
+    self.__coeffs = coeffs
+    super(PolynomialBaseProvideCoeffs, self).__init__()
+
+  @abc.abstractproperty
+  def monomialswithoutcoeffs(self):
+    """
+    should be a list or generator of Counters, e.g. Counter({"x": 1, "y": 2} for the x*y^2 term,
+    or something that can be passed as an argument to Counter, e.g. "xyy"
+    __init__ will expect coefficients to be in the order corresponding to these terms
+    """
+
+  @property
+  def monomials(self):
+    for coeff, monomial in itertools.izip_longest(self.__coeffs, self.monomialswithoutcoeffs):
+      if coeff is None or monomial is None:
+        raise IndexError("Provided {} coefficients, need {}".format(len(self.__coeffs), len(list(self.monomialswithoutcoeffs))))
+      yield Monomial(coeff, monomial)
+
+class PolynomialNd(PolynomialBaseProvideCoeffs, PolynomialBaseStandardLetters):
+  def __init__(self, d, n, coeffs):
+    self.__degree = d
+    self.__nvariables = n
+    super(PolynomialNd, self).__init__(coeffs)
+  @property
+  def monomialswithoutcoeffs(self):
+    xand1 = "1"+getnvariableletters(self.__nvariables)
+    return itertools.combinations_with_replacement(xand1, self.__degree)
+
 
 class DegeneratePolynomialError(ValueError):
-  def __init__(self, coeffs, d, variable):
-    super(DegeneratePolynomialError, self).__init__("Can't find the boundary polynomial of {} because it has 0 in front of the {}^{} term".format(coeffs, d, variable))
-
-def getboundarymonomials(d, n, coeffs):
-  firstletter = getnvariableletters(n)[0]
-  for coeff, ctr in getpolynomialndmonomials(d, n, coeffs):
-    if ctr["1"]: continue
-    if len(set(ctr.elements())) == 1 and coeff == 0: raise DegeneratePolynomialError(coeffs, d, next(ctr.elements()))
-    yield coeff, ctr
-
-def differentiatemonomial(coeffandxs, variable):
-  coeff, xs = coeffandxs
-  xs = collections.Counter(xs)
-  coeff *= xs[variable]
-  if coeff: xs[variable] -= 1
-  return coeff, xs
-
-def getpolynomialndgradient(d, n, coeffs):
-  monomials = tuple(getpolynomialndmonomials(d, n, coeffs))
-  derivatives = [[] for _ in xrange(n)]
-  variablesandderivatives = zip(getnvariableletters(n), derivatives)
-  for coeffandxs in monomials:
-    for variable, derivative in variablesandderivatives:
-      coeff, xs = differentiatemonomial(coeffandxs, variable)
-      if coeff: derivative.append((coeff, xs))
-  return derivatives
-
-def getpolynomialndgradientstrings(d, n, coeffs, homogenize=False):
-  return [
-    " + ".join(
-      "*".join(
-        itertools.chain(
-          (repr(coeff),), ["alpha" if homogenize and variable=="1" else variable for variable in xs.elements()]
-        )
-      ) for coeff, xs in derivative
-    ) + ";" for derivative in getpolynomialndgradient(d, n, coeffs)
-  ]
-
-def findcriticalpointsquadraticnd(n, coeffs):
-  gradient = getpolynomialndgradient(2, n, coeffs)
-  variableletters = getnvariableletters(n)
-  #Ax=b
-  A = np.zeros((n, n))
-  b = np.zeros((n, 1))
-  for derivative, row, constant in itertools.izip_longest(gradient, A, b):
-    for coeff, xs in derivative:
-      xs = list(xs.elements())
-      assert len(xs) <= 1
-      if not xs or xs[0] == "1":
-        constant[0] = -coeff  #note - sign here!  Because the gradient should be Ax + (-b)
-      else:
-        row[variableletters.index(xs[0])] = coeff
-  return np.linalg.solve(A, b).T
-
-def findcriticalpointspolynomialnd(d, n, coeffs, verbose=False, usespecialcases=True, cmdlinestotry=("smallparalleltdeg",), homogenizecoeffs=None, boundarycriticalpoints=[], setsmallestcoefficientsto0=False):
-  if usespecialcases and d == 2:
-    return findcriticalpointsquadraticnd(n, coeffs)
-
-  gradientstrings = getpolynomialndgradientstrings(d, n, coeffs, homogenize=homogenizecoeffs is not None)
-  if homogenizecoeffs is not None:
-    extraequations = [
-      "+".join("{:g}".format(coeff)+"*"+variable for coeff, variable in itertools.izip_longest(homogenizecoeffs, itertools.chain(["alpha"], getnvariableletters(n), ["1"]))) + ";"
-    ]
-  else:
-    extraequations = []
-  stdin = "\n".join(["{"] + gradientstrings + extraequations + ["}"])
-
-  errors = []
-  for cmdline in cmdlinestotry:
-    try:
-      result = hom4pswrapper.runhom4ps(stdin, whichcmdline=cmdline, verbose=verbose)
-    except hom4pswrapper.Hom4PSTimeoutError as e:
-      pass
-    except hom4pswrapper.Hom4PSFailedPathsError as e:
-      errors.append(e)
-    except hom4pswrapper.Hom4PSDuplicateSolutionsError as e:
-      errors.append(e)
-    except hom4pswrapper.Hom4PSDivergentPathsError as e:
-      if homogenizecoeffs is None:
-        for cp in boundarycriticalpoints:
-          try:
-            newhomogenizecoeffs = np.concatenate(([1, 1], 1/cp, [1]))
-          except RuntimeWarning as runtimewarning:
-            if "divide by zero encountered in true_divide" in runtimewarning:
-              continue #can't use this cp
-          try:
-            homogenizedresult = findcriticalpointspolynomialnd(d, n, coeffs, verbose=verbose, usespecialcases=usespecialcases, cmdlinestotry=cmdlinestotry, homogenizecoeffs=newhomogenizecoeffs, setsmallestcoefficientsto0=setsmallestcoefficientsto0)
-          except NoCriticalPointsError:
-            pass
-          else:
-            for solution in e.realsolutions:
-              if not any(np.allclose(solution, newsolution) for newsolution in homogenizedresult):
-                break
-            else: #all old solutions are still there after homogenizing
-              return homogenizedresult
-      errors.append(e)
-    else:
-      solutions = result.realsolutions
-      if homogenizecoeffs is not None:
-        solutions = [solution[1:] / solution[0] for solution in solutions]
-      return solutions
-
-  if errors:
-    if verbose:
-      print "seeing if those calls gave different solutions, in case between them we have them all covered"
-
-    solutions = []
-    allclosekwargs = {"rtol": 1e-3, "atol": 1e-08}
-    for error in errors:
-      thesesolutions = error.realsolutions
-      if homogenizecoeffs is not None:
-        thesesolutions = [solution[1:] / solution[0] for solution in thesesolutions]
-
-      while any(closebutnotequal(first, second, **allclosekwargs) for first, second in itertools.combinations(thesesolutions, 2)):
-        allclosekwargs["rtol"] /= 2
-        allclosekwargs["atol"] /= 2
-
-      for newsolution in thesesolutions:
-        if not any(closebutnotequal(newsolution, oldsolution, **allclosekwargs) for oldsolution in solutions):
-          solutions.append(newsolution)
-
-    numberofpossiblesolutions = min(len(e.solutions) + e.nfailedpaths + e.ndivergentpaths for e in errors)
-
-    if len(solutions) > numberofpossiblesolutions:
-      raise NoCriticalPointsError(coeffs, moremessage="found too many critical points in the union of the different configurations", solutions=solutions)
-
-    if len(solutions) == numberofpossiblesolutions:
-      if verbose: print "we do"
-      if homogenizecoeffs is not None:
-        solutions = [solution[1:] / solution[0] for solution in solutions]
-      return solutions
-
-    if setsmallestcoefficientsto0:
-      newcoeffs = []
-      setto0 = []
-      biggest = max(abs(coeffs))
-      smallest = min(abs(coeffs[np.nonzero(coeffs)]))
-      for coeff in coeffs:
-        if coeff == 0 or np.log(biggest / abs(coeff)) < np.log(abs(coeff) / smallest):
-          newcoeffs.append(coeff)
-        else:
-          setto0.append(coeff)
-          newcoeffs.append(0)
-      newcoeffs = np.array(newcoeffs)
-      setto0 = np.array(setto0)
-      if np.log10(min(abs(newcoeffs[np.nonzero(newcoeffs)])) / max(abs(setto0))) > np.log10(biggest / smallest) / 3: #if there's a big gap
-        if verbose: print "trying again after setting the smallest coefficients to 0:\n{}".format(setto0)
-        newsolutions = findcriticalpointspolynomialnd(d, n, newcoeffs, verbose=verbose, usespecialcases=usespecialcases, cmdlinestotry=cmdlinestotry, homogenizecoeffs=homogenizecoeffs, boundarycriticalpoints=boundarycriticalpoints)
-        for oldsolution in solutions:
-          if verbose: print "checking if old solution {} is still here".format(oldsolution)
-          if not any(np.allclose(oldsolution, newsolution, **allclosekwargs) for newsolution in newsolutions):
-            if verbose: print "it's not"
-            break  #removing this coefficient messed up one of the old solutions, so we can't trust the new ones
-          if verbose: print "it is"
-        else:  #removing this coefficient didn't mess up the old solutions
-          return newsolutions
-      else:
-        if verbose: print "can't set the smallest coefficients to 0, there's not a clear separation between big and small:\nbig candidates:{} --> range = {} - {}\nsmall candidates: {} --> range = {} - {}\n\nmore info: {} {}".format(newcoeffs[np.nonzero(newcoeffs)], min(abs(newcoeffs[np.nonzero(newcoeffs)])), max(abs(newcoeffs)), setto0, min(abs(setto0)), max(abs(setto0)), np.log10(min(abs(newcoeffs[np.nonzero(newcoeffs)])) / max(abs(setto0))), np.log10(biggest / smallest))
-  else:
-    solutions=None
-
-  raise NoCriticalPointsError(coeffs, moremessage="there are failed and/or divergent paths, even after trying different configurations and saving mechanisms", solutions=solutions)
+  def __init__(self, polynomial, variable, power):
+    super(DegeneratePolynomialError, self).__init__("Can't find the boundary polynomial of {} because it doesn't have a nonzero {}^{} term".format(polynomial, variable, power))
 
 class NoCriticalPointsError(ValueError):
   def __init__(self, coeffs, moremessage=None, solutions=None):
@@ -430,130 +749,6 @@ def printresult(function):
     raw_input()
     return result
   return newfunction
-
-#@printresult
-def minimizepolynomialnd(d, n, coeffs, verbose=False, **kwargs):
-  if n == 1:
-    if d == 0: return minimizeconstant(coeffs)
-    if d == 1: return minimizelinear(coeffs)
-    if d == 2: return minimizequadratic(coeffs)
-    if d == 3: return minimizecubic(coeffs)
-    if d == 4: return minimizequartic(coeffs)
-
-  if not np.any(coeffs[1:]):
-    return OptimizeResult(
-      x=np.array([0]*n),
-      success=True,
-      status=2,
-      message="polynomial is constant",
-      fun=coeffs[0],
-      linearconstraint=np.array([1 if i==0 else 0 for i in range(len(coeffs))])
-    )
-
-  polynomial = getpolynomialnd(d, n, coeffs)
-
-  #check the behavior around the sphere at infinity
-  boundarycoeffs, boundarymonomials = zip(*getboundarymonomials(d, n, coeffs))
-  boundarycoeffs = np.array(boundarycoeffs)
-  boundarykwargs = kwargs.copy()
-  if kwargs.get("homogenizecoeffs") is not None:
-    boundarykwargs["homogenizecoeffs"] = kwargs["homogenizecoeffs"][1:]
-  boundaryresult = minimizepolynomialnd(d, n-1, boundarycoeffs, verbose=verbose, **boundarykwargs)
-  if boundaryresult.fun < 0:
-    x = np.concatenate(([1], boundaryresult.x))
-    multiply = 1
-    while polynomial(x*multiply) > -1e6:
-      multiply *= 10
-      if multiply > 1e30: assert False
-
-    linearconstraint = []
-    monomials = getpolynomialndmonomials(d, n)
-    boundarylinearconstraint = iter(boundaryresult.linearconstraint)
-    boundarymonomials = iter(boundarymonomials)
-    nextboundarymonomial = next(boundarymonomials)
-
-    for monomial in monomials:
-      if monomial == nextboundarymonomial:
-        linearconstraint.append(next(boundarylinearconstraint))
-        nextboundarymonomial = next(boundarymonomials, None)
-      else:
-        linearconstraint.append(0)
-
-    for remaining in itertools.izip_longest(boundarylinearconstraint, boundarymonomials): assert False
-    assert nextboundarymonomial is None
-
-    return OptimizeResult(
-      x=x*multiply,
-      success=False,
-      status=3,
-      message="function goes to -infinity somewhere around the sphere at infinity",
-      fun=polynomial(x*multiply),
-      linearconstraint=np.array(linearconstraint),
-      boundaryresult=boundaryresult,
-    )
-
-  assert "boundarycriticalpoints" not in kwargs
-  if hasattr(boundaryresult, "criticalpoints"):
-    kwargs["boundarycriticalpoints"] = boundaryresult.criticalpoints
-
-  criticalpoints = list(findcriticalpointspolynomialnd(d, n, coeffs, verbose=verbose, **kwargs))
-  if not criticalpoints:
-    raise NoCriticalPointsError(coeffs, moremessage="system of polynomials doesn't have any critical points")
-
-  criticalpoints.sort(key=polynomial)
-  if verbose:
-    for cp in criticalpoints:
-      print cp, polynomial(cp)
-  minimumx = criticalpoints[0]
-  minimum = polynomial(minimumx)
-
-  linearconstraint = getpolynomialnd(d, n, np.diag([1 for _ in coeffs]))(minimumx)
-  if not np.isclose(np.dot(linearconstraint, coeffs), minimum, rtol=2e-2):
-    raise ValueError("{} != {}??".format(np.dot(linearconstraint, coeffs), minimum))
-
-  return OptimizeResult(
-    x=np.array(minimumx),
-    success=True,
-    status=1,
-    message="gradient is zero at {} real points".format(len(criticalpoints)),
-    fun=minimum,
-    linearconstraint=linearconstraint,
-    boundaryresult=boundaryresult,
-    criticalpoints=criticalpoints,
-  )
-
-def coeffswithpermutedvariables(d, n, coeffs, permutationdict):
-  xand1 = "1"+getnvariableletters(n)
-  monomialsandcoeffs = {frozenset(ctr.iteritems()): coeff for coeff, ctr in getpolynomialndmonomials(d, n, coeffs)}
-  for monomial in getpolynomialndmonomials(d, n):
-    newmonomial = collections.Counter(permutationdict[e] for e in monomial.elements())
-    newcoeff = monomialsandcoeffs[frozenset(newmonomial.iteritems())]
-    yield newcoeff
-
-def minimizepolynomialnd_permutation(d, n, coeffs, permutationdict, **kwargs):
-  newcoeffs = np.array(list(coeffswithpermutedvariables(d, n, coeffs, permutationdict)))
-  result = minimizepolynomialnd(d, n, newcoeffs, **kwargs)
-
-  reverse = {v: k for k, v in permutationdict.iteritems()}
-
-  if all(k == v for k, v in permutationdict.iteritems()): return result
-
-  linearconstraint = np.array(list(coeffswithpermutedvariables(d, n, result.linearconstraint, reverse)))
-  if (
-    np.sign(np.dot(linearconstraint, coeffs)) != np.sign(result.fun)
-    and np.sign(np.dot(linearconstraint, coeffs)) != 0
-    and np.sign(result.fun) != 0
-    and not np.isclose(np.dot(linearconstraint, coeffs), result.fun) #numerical issues occasionally give +epsilon and -epsilon when you add in different orders
-  ):
-    raise ValueError("sign({}) != sign({})??".format(np.dot(linearconstraint, coeffs), result.fun))
-
-  return OptimizeResult(
-    permutation=permutationdict,
-    permutedresult=result,
-    fun=result.fun,
-    linearconstraint=linearconstraint,
-    x=(result.x, "permuted")
-  )
 
 def permutations_differentonesfirst(iterable):
   """
@@ -578,58 +773,6 @@ def permutations_differentonesfirst(iterable):
     permutations.remove(best)
     yield best
 
-
-def minimizepolynomialnd_permutations(d, n, coeffs, debugprint=False, permutationmode="best", **kwargs):
-  xand1 = "1"+getnvariableletters(n)
-  best = None
-  signs = {1: [], -1: [], 0: []}
-  for permutation in permutations_differentonesfirst(xand1):
-    permutationdict = {orig: new for orig, new in itertools.izip(xand1, permutation)}
-    try:
-      result = minimizepolynomialnd_permutation(d, n, coeffs, permutationdict=permutationdict, **kwargs)
-    except (NoCriticalPointsError, DegeneratePolynomialError):
-      continue
-
-    #want this to be small
-    nonzerolinearconstraint = result.linearconstraint[np.nonzero(result.linearconstraint)]
-    figureofmerit = (result.fun >= 0), len(result.linearconstraint) - len(nonzerolinearconstraint), sum(np.log(abs(nonzerolinearconstraint))**2)
-
-    if debugprint:
-      print "---------------------------------"
-      print result.linearconstraint
-      print figureofmerit
-
-    if best is None or figureofmerit < best[3]:
-      best = permutation, permutationdict, result, figureofmerit
-      if debugprint: print "new best"
-
-    if debugprint: print "---------------------------------"
-
-    signs[np.sign(result.fun)].append(permutation)
-    if {
-      "best": result.fun > 0 or figureofmerit <= (False, 0, 50),
-      "asneeded": True,
-      "best_gothroughall": False,
-    }[permutationmode]:
-      break
-
-  if best is None:
-    if "setsmallestcoefficientsto0" not in kwargs:
-      kwargs["setsmallestcoefficientsto0"] = True
-      return minimizepolynomialnd_permutations(d, n, coeffs, debugprint=debugprint, permutationmode=permutationmode, **kwargs)
-    if "cmdlinestotry" not in kwargs:
-      kwargs["cmdlinestotry"] = "smallparalleltdeg", "smallparalleltdegstepctrl", "smallparallel"#, "easy"
-      return minimizepolynomialnd_permutations(d, n, coeffs, debugprint=debugprint, permutationmode=permutationmode, **kwargs)
-    raise NoCriticalPointsError("Couldn't minimize polynomial under any permutation:\n{}".format(coeffs))
-
-  permutation, permutationdict, result, figureofmerit = best
-
-  #import pprint; pprint.pprint(signs)
-
-  return result
-
-def minimizepolynomialnd_permutationsasneeded(*args, **kwargs):
-  return minimizepolynomialnd_permutations(*args, permutationmode="asneeded", **kwargs)
 
 if __name__ == "__main__":
   coeffs = np.array([float(_) for _ in """
@@ -658,7 +801,7 @@ if __name__ == "__main__":
   p.add_argument("--verbose", action="store_true")
   args = p.parse_args()
 
-  print minimizepolynomialnd_permutationsasneeded(4, 4, coeffs, verbose=True)
+  print PolynomialNd(4, 4, coeffs).minimize_permutationsasneeded(verbose=True)
 
   #coeffs = coeffswithpermutedvariables(4, 4, coeffs, {"1": "z", "z": "1", "x": "x", "y": "y", "w": "w"})
 
