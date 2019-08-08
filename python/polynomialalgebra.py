@@ -344,7 +344,7 @@ class PolynomialBase(object):
 
     result = ExplicitPolynomial(monomials, self.variableletters).dehomogenize()
 
-    for letter in result.variableletters:
+    for letter in self.variableletters:
       if not sawmaxpower[letter]:
         raise DegeneratePolynomialError(self, letter, self.maxvariablepower)
 
