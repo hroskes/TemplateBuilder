@@ -209,8 +209,12 @@ def minimizequartic(coeffs):
     linearconstraint = np.array([1, x, x**2, x**3, x**4]),
   )
 
-def getnvariableletters(n):
-  return "abcdefghijklmnopqrstuvwxyz"[-n:]
+def getnvariableletters(n, frombeginning=False):
+  abc = "abcdefghijklmnopqrstuvwxyz"
+  if frombeginning:
+    return abc[:n]
+  else:
+    return abc[-n:]
 
 class VariablePowers(collections.Counter):
   def __hash__(self):
@@ -240,14 +244,14 @@ class VariablePowers(collections.Counter):
     if withvariable != "1": assert withvariable not in newctr
     newctr[withvariable] = todegree - self.degree
     return newctr
-  def dehomogenize(self, withvariable):
+  def dehomogenize(self, withvariables):
     newctr = VariablePowers(self)
-    newctr[withvariable] = 0
+    for withvariable in withvariables:
+      newctr[withvariable] = 0
     if not any(newctr.values()): newctr["1"] = 1
     return VariablePowers(newctr)
   def permutevariables(self, permutationdict):
     return VariablePowers(permutationdict[variable] for variable in self.elements())
-
 
 class Monomial(collections.namedtuple("Monomial", "coeff variablepowers")):
   def __new__(cls, coeff, variablepowers):
@@ -281,8 +285,8 @@ class Monomial(collections.namedtuple("Monomial", "coeff variablepowers")):
     return Monomial(self.coeff, self.variablepowers.permutevariables(permutationdict))
   def homogenize(self, withvariable, todegree):
     return Monomial(self.coeff, self.variablepowers.homogenize(withvariable, todegree))
-  def dehomogenize(self, withvariable):
-    return Monomial(self.coeff, self.variablepowers.dehomogenize(withvariable))
+  def dehomogenize(self, withvariables):
+    return Monomial(self.coeff, self.variablepowers.dehomogenize(withvariables))
 
 class PolynomialBase(object):
   def __init__(self):
@@ -320,6 +324,8 @@ class PolynomialBase(object):
 
   @abc.abstractproperty
   def variableletters(self): pass
+  @abc.abstractproperty
+  def dehomogenizevariablesorder(self): pass
 
   def __call__(self, variablearray=None, **kwargs):
     if variablearray is not None:
@@ -341,7 +347,7 @@ class PolynomialBase(object):
           if power == self.maxvariablepower:
             sawmaxpower[letter] = True
 
-    result = ExplicitPolynomial(monomials, self.variableletters).dehomogenize()
+    result = ExplicitPolynomial(monomials, self.variableletters, self.dehomogenizevariablesorder).dehomogenize()
 
     for letter in self.variableletters:
       if not sawmaxpower[letter]:
@@ -350,10 +356,11 @@ class PolynomialBase(object):
     return result
 
   def derivative(self, variable):
-    return ExplicitPolynomial((monomial.derivative(variable) for monomial in self.monomials), self.variableletters)
+    return ExplicitPolynomial((monomial.derivative(variable) for monomial in self.monomials), self.variableletters, None)
 
   def permutevariables(self, permutationdict):
-    return ExplicitPolynomial((monomial.permutevariables(permutationdict) for monomial in self.homogenize("1").monomials), self.variableletters)
+    if not self.ishomogeneous: raise ValueError("Can't permute a non-homogeneous polynomial")
+    return ExplicitPolynomial((monomial.permutevariables(permutationdict) for monomial in self.monomials), self.variableletters, self.dehomogenizevariablesorder)
 
   @property
   def gradient(self):
@@ -363,11 +370,13 @@ class PolynomialBase(object):
     return " + ".join(str(m) for m in self.monomials if m)
 
   def homogenize(self, withvariable):
-    return ExplicitPolynomial((monomial.homogenize(withvariable, self.degree) for monomial in self.monomials), self.variableletters + (withvariable,))
+    return ExplicitPolynomial((monomial.homogenize(withvariable, self.degree) for monomial in self.monomials), self.variableletters + (withvariable,), None)
   def dehomogenize(self):
     if not self.ishomogeneous: raise ValueError("Can't dehomogenize\n{}\nwhich isn't homogeneous".format(self))
-    removevariable = self.variableletters[0]
-    return ExplicitPolynomial((monomial.dehomogenize(removevariable) for monomial in self.monomials), self.variableletters[1:])
+    if self.dehomogenizevariablesorder is None: raise ValueError("Can't dehomogenize\n{}\nwhich doesn't have a dehomogenizevariablesorder")
+    order = iter(self.dehomogenizevariablesorder)
+    dehomogenizewith = next(order)
+    return ExplicitPolynomial((monomial.dehomogenize(dehomogenizewith) for monomial in self.monomials), [_ for _ in self.variableletters if _ not in dehomogenizewith], tuple(order))
 
   def setsmallestcoefficientsto0(self):
     coeffs = np.array([m.coeff for m in self.monomials])
@@ -390,11 +399,14 @@ class PolynomialBase(object):
     if np.log10(min(abs(newcoeffs[np.nonzero(newcoeffs)])) / max(abs(setto0))) < np.log10(biggest / smallest) / 3:
       #no big gap between the big ones and the small ones
       raise NoCoeffGapError
-    return ExplicitPolynomial(newmonomials, self.variableletters)
+    return ExplicitPolynomial(newmonomials, self.variableletters, self.dehomogenizevariablesorder)
 
   def findcriticalpoints(self, verbose=False, cmdlinestotry=("smallparalleltdeg",), homogenizecoeffs=None, boundarycriticalpoints=[], setsmallestcoefficientsto0=False):
+    if self.ishomogeneous:
+      raise ValueError("You need to dehomogenize the polynomial before you find critical points")
+
     if self.degree == 2:
-      variableletters = getnvariableletters(n)
+      variableletters = self.variableletters
       #Ax=b
       A = np.zeros((n, n))
       b = np.zeros((n, 1))
@@ -421,7 +433,9 @@ class PolynomialBase(object):
             homogenizecoeffs,
             itertools.chain(["alpha"], self.variableletters, ["1"])
           )
-        ), self.variableletters+("alpha",)
+        ),
+        self.variableletters+("alpha",),
+        None,
       )
       extraequations = [str(linearpolynomial)+";"]
 
@@ -516,6 +530,9 @@ class PolynomialBase(object):
     raise NoCriticalPointsError(self, moremessage="there are failed and/or divergent paths, even after trying different configurations and saving mechanisms", solutions=solutions)
 
   def minimize(self, verbose=False, **kwargs):
+    if self.ishomogeneous:
+      return self.dehomogenize().minimize(verbose=verbose, **kwargs)
+
     if self.nvariables == 1 and self.degree <= 4:
       coeffs = [m.coeff for m in sorted(self.monomials, key=lambda x: x.degree)]
       if self.degree == 0: return minimizeconstant(coeffs)
@@ -589,7 +606,8 @@ class PolynomialBase(object):
         np.array([1 if i==j else 0 for i in xrange(self.nmonomials)]),
         monomial.variablepowers,
       ) for j, monomial in enumerate(self.monomials)),
-      self.variableletters
+      self.variableletters,
+      None,
     )(minimumx)
     if not np.isclose(np.dot(linearconstraint, [monomial.coeff for monomial in self.monomials]), minimum, rtol=2e-2):
       raise ValueError("{} != {}??".format(np.dot(linearconstraint, [monomial.coeff for monomial in self.monomials]), minimum))
@@ -637,14 +655,14 @@ class PolynomialBase(object):
     )
 
   def minimize_permutations(self, debugprint=False, permutationmode="best", **kwargs):
-    xand1 = ("1",)+self.variableletters
+    xand1 = self.variableletters
     best = None
     signs = {1: [], -1: [], 0: []}
     for permutation in permutations_differentonesfirst(xand1):
       permutationdict = {orig: new for orig, new in itertools.izip(xand1, permutation)}
       try:
         result = self.minimize_permutation(permutationdict=permutationdict, **kwargs)
-      except (NoCriticalPointsError, DegeneratePolynomialError):
+      except (NoCriticalPointsError, DegeneratePolynomialError) as e:
         continue
 
       #want this to be small
@@ -696,14 +714,18 @@ class PolynomialBaseStandardLetters(PolynomialBase):
     return tuple(getnvariableletters(self.nvariables))
 
 class ExplicitPolynomial(PolynomialBase):
-  def __init__(self, monomials, variableletters):
+  def __init__(self, monomials, variableletters, dehomogenizevariablesorder):
     self.__monomials = tuple(monomials)
     self.__variableletters = tuple(variableletters)
+    if dehomogenizevariablesorder is not None: dehomogenizevariablesorder = tuple(dehomogenizevariablesorder)
+    self.__dehomogenizevariablesorder = dehomogenizevariablesorder
     super(ExplicitPolynomial, self).__init__()
   @property
   def monomials(self): return self.__monomials
   @property
   def variableletters(self): return self.__variableletters
+  @property
+  def dehomogenizevariablesorder(self): return self.__dehomogenizevariablesorder
 
 class PolynomialBaseProvideCoeffs(PolynomialBase):
   def __init__(self, coeffs):
@@ -732,9 +754,46 @@ class PolynomialNd(PolynomialBaseProvideCoeffs, PolynomialBaseStandardLetters):
     super(PolynomialNd, self).__init__(coeffs)
   @property
   def monomialswithoutcoeffs(self):
-    xand1 = "1"+getnvariableletters(self.__nvariables)
+    xand1 = getnvariableletters(self.__nvariables+1)
     return itertools.combinations_with_replacement(xand1, self.__degree)
+  @property
+  def dehomogenizevariablesorder(self): return self.variableletters
 
+class DoubleQuadratic(PolynomialBaseProvideCoeffs):
+  def __init__(self, n1, n2, coeffs):
+    self.__nvariables1 = n1
+    self.__nvariables2 = n2
+    self.__degree1 = self.__degree2 = 2 = 2
+  @property
+  def variables1(self):
+    return getnvariableletters(self.__nvariables1, frombeginning=True)
+  @property
+  def variables2(self):
+    return getnvariableletters(self.__nvariables2, frombeginning=True)
+  @property
+  def monomialswithoutcoeffs(self):
+    return itertools.product(
+      itertools.combinationwithreplacement(self.variables1, self.__degree1),
+      itertools.combination_with_replacement(self.variables2, self.__degree2)
+    )
+  @property
+  def dehomogenizevariablesorder(self):
+    vv1 = iter(self.variables1)
+    vv2 = iter(self.variables2)
+    while True:
+      try:
+        v1 = next(vv1)
+      except StopIteration:
+        break
+        pass
+      try:
+        v2 = next(vv2)
+      except StopIteration:
+        yield v2,
+        break
+      yield v1, v2
+    for _ in v1: yield _,
+    for _ in v2: yield _,
 
 class DegeneratePolynomialError(ValueError):
   def __init__(self, polynomial, variable, power):
