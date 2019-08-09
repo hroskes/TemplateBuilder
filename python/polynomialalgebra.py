@@ -417,7 +417,6 @@ class PolynomialBase(object):
       A = np.zeros((self.nvariables, self.nvariables))
       b = np.zeros((self.nvariables, 1))
       for derivative, row, constant in itertools.izip_longest(self.gradient, A, b):
-        print derivative
         for monomial in derivative.monomials:
           coeff = monomial.coeff
           xs = list(monomial.variablepowers.elements())
@@ -540,6 +539,7 @@ class PolynomialBase(object):
     raise NoCriticalPointsError(self, moremessage="there are failed and/or divergent paths, even after trying different configurations and saving mechanisms", solutions=solutions)
 
   def minimize(self, verbose=False, **kwargs):
+    print self
     if self.ishomogeneous:
       return self.dehomogenize().minimize(verbose=verbose, **kwargs)
 
@@ -777,13 +777,13 @@ class HomogeneousPolynomialNd(PolynomialBaseProvideCoeffs, PolynomialBaseStandar
 def PolynomialNd(d, n, coeffs):
   return HomogeneousPolynomialNd(d, n+1, coeffs).dehomogenize()
 
-class DoubleQuadratic(PolynomialBaseProvideCoeffs):
+class HomogeneousDoubleQuadratic(PolynomialBaseProvideCoeffs):
   def __init__(self, n1, n2, coeffs):
     self.__nvariables1 = n1
     self.__nvariables2 = n2
     self.__degree1 = self.__degree2 = 2
     assert not set(self.variables1) & set(self.variables2)
-    super(DoubleQuadratic, self).__init__(coeffs)
+    super(HomogeneousDoubleQuadratic, self).__init__(coeffs)
   @property
   def variables1(self):
     return getnvariableletters(self.__nvariables1, frombeginning=True)
@@ -828,6 +828,9 @@ class DoubleQuadratic(PolynomialBaseProvideCoeffs):
             itertools.izip(self.variables2, permutation2)
           )
         }
+
+def DoubleQuadratic(n1, n2, coeffs):
+  return HomogeneousDoubleQuadratic(n1+1, n2+1, coeffs).dehomogenize()
 
 class DegeneratePolynomialError(ValueError):
   def __init__(self, polynomial, variable, power):

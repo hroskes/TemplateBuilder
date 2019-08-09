@@ -7,7 +7,7 @@ import cvxpy as cp
 from scipy import optimize, special
 
 from optimizeresult import OptimizeResult
-from polynomialalgebra import HomogeneousPolynomialNd, minimizequadratic, minimizequartic, PolynomialNd
+from polynomialalgebra import HomogeneousDoubleQuadratic, HomogeneousPolynomialNd, minimizequadratic, minimizequartic, PolynomialNd
 
 class CuttingPlaneMethodBase(object):
   __metaclass__ = abc.ABCMeta
@@ -149,7 +149,7 @@ class CuttingPlaneMethodBase(object):
       if p%2: raise ValueError("max power of {} is odd: {}".format(v, p))
     result = []
     for i, monomial in enumerate(self.monomials):
-      if any(monomial[v] == p for v, p in maxpowers.iteritems()):
+      if all(monomial[v] == p or monomial[v] == 0 for v, p in maxpowers.iteritems()):
         result.append(i)
     return result
 
@@ -207,12 +207,12 @@ class CuttingPlaneMethodBase(object):
     """
   @abc.abstractproperty
   def polynomialclass(self): pass
-  @abc.abstractproperty
-  def polynomialargsarbitrarycoeffs(self): pass
+  @abc.abstractmethod
+  def polynomialargs(self, coeffs): pass
 
   @property
   def monomials(self):
-    return self.polynomialclass(*self.polynomialargsarbitrarycoeffs).monomialswithoutcoeffs
+    return self.polynomialclass(*self.polynomialargs()).monomialswithoutcoeffs
 
   def iterate(self):
     if self.__results is not None:
@@ -349,14 +349,18 @@ class CuttingPlaneMethodBase(object):
 class CuttingPlaneMethod1DQuadratic(CuttingPlaneMethodBase):
   xsize = 3
   polynomialclass = staticmethod(PolynomialNd)
-  polynomialargsarbitrarycoeffs = 2, 1, [1]*xsize
+  def polynomialargs(self, coeffs=None):
+    if coeffs is None: coeffs = [1]*self.xsize
+    return 2, 1, coeffs
   evalconstraint = staticmethod(minimizequadratic)
   def constantindex(self, minimizepolynomialresult): return 0
 
 class CuttingPlaneMethod1DQuartic(CuttingPlaneMethodBase):
   xsize = 5
   polynomialclass = staticmethod(PolynomialNd)
-  polynomialargsarbitrarycoeffs = 4, 1, [1]*xsize
+  def polynomialargs(self, coeffs=None):
+    if coeffs is None: coeffs = [1]*self.xsize
+    return 4, 1, coeffs
   evalconstraint = staticmethod(minimizequartic)
   def constantindex(self, minimizepolynomialresult): return 0
 
@@ -365,8 +369,8 @@ class CuttingPlaneMethodMultiDimensional(CuttingPlaneMethodBase):
     self.__usepermutations = kwargs.pop("usepermutations", "asneeded")
     super(CuttingPlaneMethodMultiDimensional, self).__init__(*args, **kwargs)
 
-  def minimizepolynomialfunction(self, *args, **kwargs):
-    polynomial = self.polynomialclass(*args)
+  def minimizepolynomialfunction(self, coeffs, **kwargs):
+    polynomial = self.polynomialclass(*self.polynomialargs(coeffs))
     if "permutationdict" in kwargs:
       function = polynomial.minimize_permutation
     else:
@@ -377,20 +381,10 @@ class CuttingPlaneMethodMultiDimensional(CuttingPlaneMethodBase):
       }[self.__usepermutations]
     return function(**kwargs)
 
-class CuttingPlaneMethodPolynomialNd(CuttingPlaneMethodMultiDimensional):
-  polynomialclass = HomogeneousPolynomialNd
-  @property
-  def polynomialargsarbitrarycoeffs(self):
-    return self.degree, self.nvariables+1, [1]*self.xsize
-
-class CuttingPlaneMethodPolynomialNdSimple(CuttingPlaneMethodPolynomialNd):
-  def evalconstraint(self, coeffs, **kwargs):
-    return self.minimizepolynomialfunction(self.degree, self.nvariables+1, coeffs, **kwargs)
-
   def constantindex(self, minimizepolynomialresult):
     permutation = minimizepolynomialresult.get("permutation", {v: v for v in self.polynomialvariables})
 
-    constantvariables = next(iter(self.polynomialclass(*self.polynomialargsarbitrarycoeffs).dehomogenizevariablesorder))
+    constantvariables = next(iter(self.polynomialclass(*self.polynomialargs()).dehomogenizevariablesorder))
     permutedtoconstant = {permutation[v] for v in constantvariables}
 
     #for k, v in permutation.iteritems():
@@ -400,20 +394,30 @@ class CuttingPlaneMethodPolynomialNdSimple(CuttingPlaneMethodPolynomialNd):
         return i
     assert False
 
+class CuttingPlaneMethodPolynomialNd(CuttingPlaneMethodMultiDimensional):
+  polynomialclass = HomogeneousPolynomialNd
+  def polynomialargs(self, coeffs=None):
+    if coeffs is None: coeffs = [1]*self.xsize
+    return self.degree, self.nvariables+1, coeffs
+
   @abc.abstractproperty
   def degree(self): "can be a class member"
   @abc.abstractproperty
   def nvariables(self): "can be a class member"
 
+class CuttingPlaneMethodPolynomialNdSimple(CuttingPlaneMethodPolynomialNd):
+  def evalconstraint(self, coeffs, **kwargs):
+    return self.minimizepolynomialfunction(coeffs, **kwargs)
+
   @property
   def xsize(self): return special.comb(self.nvariables+1, self.degree, repetition=True, exact=True)
 
-class CuttingPlaneMethod_InsertZeroAtIndices(CuttingPlaneMethodPolynomialNdSimple):
+class CuttingPlaneMethod_InsertZeroAtIndices(CuttingPlaneMethodMultiDimensional):
   def evalconstraint(self, coeffs, **kwargs):
     coeffs = iter(coeffs)
-    newcoeffs = np.array([0 if i in self.insertzeroatindices else next(coeffs) for i in xrange(70)])
+    newcoeffs = np.array([0 if i in self.insertzeroatindices else next(coeffs) for i in xrange(self.xsize)])
     for remaining in coeffs: assert False
-    return self.minimizepolynomialfunction(self.degree, self.nvariables, newcoeffs, **kwargs)
+    return self.minimizepolynomialfunction(newcoeffs, **kwargs)
 
   def constantindex(self, minimizepolynomialresult):
     permutation = minimizepolynomialresult.get("permutation", {"1": "1"})
@@ -505,6 +509,32 @@ class CuttingPlaneMethod4DQuartic_4thVariableNoCubic_1stVariableOnlyEven(Cutting
         yield idx
   insertzeroatindices = list(insertzeroatindices())
   variableswithnoquarticterm = ()
+
+class CuttingPlaneMethodDoubleQuadratic(CuttingPlaneMethodMultiDimensional):
+  polynomialclass = HomogeneousDoubleQuadratic
+  def polynomialargs(self, coeffs=None):
+    if coeffs is None: coeffs = [1]*self.xsize
+    return self.nvariables1, self.nvariables2+1, coeffs
+
+  @abc.abstractproperty
+  def nvariables1(self): "can be a class member"
+  @abc.abstractproperty
+  def nvariables2(self): "can be a class member"
+
+class CuttingPlaneMethodDoubleQuadraticSimple(CuttingPlaneMethodDoubleQuadratic):
+  def evalconstraint(self, coeffs, **kwargs):
+    return self.minimizepolynomialfunction(coeffs, **kwargs)
+
+  def polynomialargs(self, coeffs=None):
+    if coeffs is None: coeffs = [1]*self.xsize
+    return self.nvariables1+1, self.nvariables2+1, coeffs
+
+  @property
+  def xsize(self): return special.comb(self.nvariables1+1, 2, repetition=True, exact=True) * special.comb(self.nvariables2+1, 2, repetition=True, exact=True)
+
+class CuttingPlaneMethod1DQuadraticBy4DQuadratic(CuttingPlaneMethodDoubleQuadraticSimple):
+  nvariables1 = 1
+  nvariables2 = 4
 
 def cuttingplanemethod1dquadratic(*args, **kwargs):
   return CuttingPlaneMethod1DQuadratic(*args, **kwargs).run()
@@ -796,9 +826,9 @@ def cuttingplanemethod4dquartic_4thvariablesmallbeyondquadratic_1stvariableonlye
   return CuttingPlaneMethod4DQuartic_4thVariableSmallBeyondQuadratic_1stVariableOnlyEven_Step2(*args, **kwargs).run()
 
 if __name__ == "__main__":
-  a = np.array([[1, 2.]]*70)
-  a[2,:] *= -1
-  print CuttingPlaneMethod4DQuartic(
+  a = np.array([[1, 2.]]*45)
+  a[3,:] *= -5
+  print CuttingPlaneMethod1DQuadraticBy4DQuadratic(
     a,
     abs(a),
     maxfractionaladjustment=1e-6,
