@@ -7,7 +7,7 @@ import cvxpy as cp
 from scipy import optimize, special
 
 from optimizeresult import OptimizeResult
-from polynomialalgebra import getpolynomialndmonomials, minimizepolynomialnd, minimizepolynomialnd_permutation, minimizepolynomialnd_permutations, minimizepolynomialnd_permutationsasneeded, minimizequadratic, minimizequartic
+from polynomialalgebra import HomogeneousPolynomialNd, minimizequadratic, minimizequartic, PolynomialNd
 
 class CuttingPlaneMethodBase(object):
   __metaclass__ = abc.ABCMeta
@@ -206,10 +206,13 @@ class CuttingPlaneMethodBase(object):
        e.g. for a 4D quartic, (1, x1, x2, x3, x4, x1^2, x1x2, ..., x4^4)
     """
   @abc.abstractproperty
+  def polynomialclass(self): pass
+  @abc.abstractproperty
+  def polynomialargsarbitrarycoeffs(self): pass
+
+  @property
   def monomials(self):
-    """
-    Order of monomials in the polynomial, corresponding to the expected order of coefficients
-    """
+    return self.polynomialclass(*self.polynomialargsarbitrarycoeffs).monomialswithoutcoeffs
 
   def iterate(self):
     if self.__results is not None:
@@ -345,13 +348,15 @@ class CuttingPlaneMethodBase(object):
 
 class CuttingPlaneMethod1DQuadratic(CuttingPlaneMethodBase):
   xsize = 3
-  monomials = list(getpolynomialndmonomials(2, 1))
+  polynomialclass = staticmethod(PolynomialNd)
+  polynomialargsarbitrarycoeffs = 2, 1, [1]*xsize
   evalconstraint = staticmethod(minimizequadratic)
   def constantindex(self, minimizepolynomialresult): return 0
 
 class CuttingPlaneMethod1DQuartic(CuttingPlaneMethodBase):
   xsize = 5
-  monomials = list(getpolynomialndmonomials(4, 1))
+  polynomialclass = staticmethod(PolynomialNd)
+  polynomialargsarbitrarycoeffs = 4, 1, [1]*xsize
   evalconstraint = staticmethod(minimizequartic)
   def constantindex(self, minimizepolynomialresult): return 0
 
@@ -361,27 +366,37 @@ class CuttingPlaneMethodMultiDimensional(CuttingPlaneMethodBase):
     super(CuttingPlaneMethodMultiDimensional, self).__init__(*args, **kwargs)
 
   def minimizepolynomialfunction(self, *args, **kwargs):
+    polynomial = self.polynomialclass(*args)
     if "permutationdict" in kwargs:
-      function = minimizepolynomialnd_permutation
+      function = polynomial.minimize_permutation
     else:
       function = {
-        True: minimizepolynomialnd_permutations,
-        False: minimizepolynomialnd,
-        "asneeded": minimizepolynomialnd_permutationsasneeded,
+        True: polynomial.minimize_permutations,
+        False: polynomial.minimize,
+        "asneeded": polynomial.minimize_permutationsasneeded,
       }[self.__usepermutations]
-    return function(*args, **kwargs)
+    return function(**kwargs)
 
-class CuttingPlaneMethodMultiDimensionalSimple(CuttingPlaneMethodMultiDimensional):
+class CuttingPlaneMethodPolynomialNd(CuttingPlaneMethodMultiDimensional):
+  polynomialclass = HomogeneousPolynomialNd
+  @property
+  def polynomialargsarbitrarycoeffs(self):
+    return self.degree, self.nvariables+1, [1]*self.xsize
+
+class CuttingPlaneMethodPolynomialNdSimple(CuttingPlaneMethodPolynomialNd):
   def evalconstraint(self, coeffs, **kwargs):
-    return self.minimizepolynomialfunction(self.degree, self.nvariables, coeffs, **kwargs)
+    return self.minimizepolynomialfunction(self.degree, self.nvariables+1, coeffs, **kwargs)
 
   def constantindex(self, minimizepolynomialresult):
-    permutation = minimizepolynomialresult.get("permutation", {"1": "1"})
-    permutedtoconstant = permutation["1"]
+    permutation = minimizepolynomialresult.get("permutation", {v: v for v in self.polynomialvariables})
+
+    constantvariables = next(iter(self.polynomialclass(*self.polynomialargsarbitrarycoeffs).dehomogenizevariablesorder))
+    permutedtoconstant = {permutation[v] for v in constantvariables}
+
     #for k, v in permutation.iteritems():
     #  if v == "1": permutedtoconstant = k
     for i, monomial in enumerate(self.monomials):
-      if set(monomial.keys()) == {permutedtoconstant}:
+      if set(monomial.keys()) <= permutedtoconstant:
         return i
     assert False
 
@@ -391,11 +406,9 @@ class CuttingPlaneMethodMultiDimensionalSimple(CuttingPlaneMethodMultiDimensiona
   def nvariables(self): "can be a class member"
 
   @property
-  def monomials(self): return list(getpolynomialndmonomials(self.degree, self.nvariables))
-  @property
   def xsize(self): return special.comb(self.nvariables+1, self.degree, repetition=True, exact=True)
 
-class CuttingPlaneMethod_InsertZeroAtIndices(CuttingPlaneMethodMultiDimensionalSimple):
+class CuttingPlaneMethod_InsertZeroAtIndices(CuttingPlaneMethodPolynomialNdSimple):
   def evalconstraint(self, coeffs, **kwargs):
     coeffs = iter(coeffs)
     newcoeffs = np.array([0 if i in self.insertzeroatindices else next(coeffs) for i in xrange(70)])
@@ -436,22 +449,22 @@ class CuttingPlaneMethod_InsertZeroAtIndices(CuttingPlaneMethodMultiDimensionalS
     return result
   expectedxsize = None
 
-class CuttingPlaneMethod3DQuadratic(CuttingPlaneMethodMultiDimensionalSimple):
+class CuttingPlaneMethod3DQuadratic(CuttingPlaneMethodPolynomialNdSimple):
   degree = 2
   nvariables = 3
 
-class CuttingPlaneMethod4DQuadratic(CuttingPlaneMethodMultiDimensionalSimple):
+class CuttingPlaneMethod4DQuadratic(CuttingPlaneMethodPolynomialNdSimple):
   degree = 2
   nvariables = 4
 
-class CuttingPlaneMethod4DQuartic(CuttingPlaneMethodMultiDimensionalSimple):
+class CuttingPlaneMethod4DQuartic(CuttingPlaneMethodPolynomialNdSimple):
   degree = 4
   nvariables = 4
 
 class CuttingPlaneMethod4DQuartic_4thVariableQuadratic(CuttingPlaneMethod_InsertZeroAtIndices, CuttingPlaneMethod4DQuartic):
   expectedxsize = 65
   def insertzeroatindices():
-    for idx, variables in enumerate(getpolynomialndmonomials(4, 4)):
+    for idx, variables in enumerate(HomogeneousPolynomialNd(4, 5, [1]*70).monomialswithoutcoeffs):
       if variables["z"] >= 3:
         yield idx
   insertzeroatindices = list(insertzeroatindices())
@@ -460,7 +473,7 @@ class CuttingPlaneMethod4DQuartic_4thVariableQuadratic(CuttingPlaneMethod_Insert
 class CuttingPlaneMethod4DQuartic_4thVariableNoCubic(CuttingPlaneMethod_InsertZeroAtIndices, CuttingPlaneMethod4DQuartic):
   expectedxsize = 66
   def insertzeroatindices():
-    for idx, variables in enumerate(getpolynomialndmonomials(4, 4)):
+    for idx, variables in enumerate(HomogeneousPolynomialNd(4, 5, [1]*70).monomialswithoutcoeffs):
       if variables["z"] == 3:
         yield idx
   insertzeroatindices = list(insertzeroatindices())
@@ -469,7 +482,7 @@ class CuttingPlaneMethod4DQuartic_4thVariableNoCubic(CuttingPlaneMethod_InsertZe
 class CuttingPlaneMethod4DQuartic_1stVariableOnlyEven(CuttingPlaneMethod_InsertZeroAtIndices, CuttingPlaneMethod4DQuartic):
   expectedxsize = 46
   def insertzeroatindices():
-    for idx, variables in enumerate(getpolynomialndmonomials(4, 4)):
+    for idx, variables in enumerate(HomogeneousPolynomialNd(4, 5, [1]*70).monomialswithoutcoeffs):
       if variables["w"] in (1, 3):
         yield idx
   insertzeroatindices = list(insertzeroatindices())
@@ -478,7 +491,7 @@ class CuttingPlaneMethod4DQuartic_1stVariableOnlyEven(CuttingPlaneMethod_InsertZ
 class CuttingPlaneMethod4DQuartic_4thVariableQuadratic_1stVariableOnlyEven(CuttingPlaneMethod_InsertZeroAtIndices, CuttingPlaneMethod4DQuartic):
   expectedxsize = 42
   def insertzeroatindices():
-    for idx, variables in enumerate(getpolynomialndmonomials(4, 4)):
+    for idx, variables in enumerate(HomogeneousPolynomialNd(4, 5, [1]*70).monomialswithoutcoeffs):
       if variables["w"] in (1, 3) or variables["z"] >= 3:
         yield idx
   insertzeroatindices = list(insertzeroatindices())
@@ -487,7 +500,7 @@ class CuttingPlaneMethod4DQuartic_4thVariableQuadratic_1stVariableOnlyEven(Cutti
 class CuttingPlaneMethod4DQuartic_4thVariableNoCubic_1stVariableOnlyEven(CuttingPlaneMethod_InsertZeroAtIndices, CuttingPlaneMethod4DQuartic):
   expectedxsize = 43
   def insertzeroatindices():
-    for idx, variables in enumerate(getpolynomialndmonomials(4, 4)):
+    for idx, variables in enumerate(HomogeneousPolynomialNd(4, 5, [1]*70).monomialswithoutcoeffs):
       if variables["w"] in (1, 3) or variables["z"] == 3:
         yield idx
   insertzeroatindices = list(insertzeroatindices())
@@ -515,13 +528,13 @@ def cuttingplanemethod4dquartic_4thvariablenocubic_1stvariableonlyeven(*args, **
   return CuttingPlaneMethod4DQuartic_4thVariableNoCubic_1stVariableOnlyEven(*args, **kwargs).run()
 
 class CuttingPlaneMethod4DQuartic_4thVariableSmallBeyondQuadratic_Step2(CuttingPlaneMethodMultiDimensional):
-  z34indices = [i for i, monomial in enumerate(getpolynomialndmonomials(4, 4)) if monomial["z"] >= 3]
+  z34indices = [i for i, monomial in enumerate(HomogeneousPolynomialNd(4, 5, [1]*70).monomialswithoutcoeffs) if monomial["z"] >= 3]
   xsize = 5
   def constantindex(self, minimizepolynomialresult): return None
   assert len(z34indices) == xsize
 
   useconstraintindices = range(70)
-  monomials = list(getpolynomialndmonomials(4, 4))
+  monomials = list(HomogeneousPolynomialNd(4, 5, [1]*70).monomialswithoutcoeffs)
   unusedmonomials = []
   for _ in sorted(range(70), reverse=True):
     if _ in z34indices: continue
@@ -561,13 +574,13 @@ class CuttingPlaneMethod4DQuartic_4thVariableSmallBeyondQuadratic_Step2(CuttingP
     return modifyothercoeffs,
 
 class CuttingPlaneMethod4DQuartic_4thVariableSmallBeyondQuadratic_1stVariableOnlyEven_Step2(CuttingPlaneMethodMultiDimensional):
-  z34indices = [i for i, monomial in enumerate(m for m in getpolynomialndmonomials(4, 4) if m["w"]%2==0) if monomial["z"] >= 3]
+  z34indices = [i for i, monomial in enumerate(m for m in HomogeneousPolynomialNd(4, 5, [1]*70).monomialswithoutcoeffs if m["w"]%2==0) if monomial["z"] >= 3]
   xsize = 4
   def constantindex(self, minimizepolynomialresult): return None
   assert len(z34indices) == xsize
 
   useconstraintindices = range(46)
-  monomials = list(m for m in getpolynomialndmonomials(4, 4) if m["w"]%2==0)
+  monomials = list(m for m in HomogeneousPolynomialNd(4, 5, [1]*70).monomialswithoutcoeffs if m["w"]%2==0)
   unusedmonomials = []
   for _ in sorted(range(46), reverse=True):
     if _ in z34indices: continue
@@ -607,7 +620,7 @@ class CuttingPlaneMethod4DQuartic_4thVariableSmallBeyondQuadratic_1stVariableOnl
     return modifyothercoeffs,
 
 def cuttingplanemethod4dquartic_4thvariablezerobeyondquadratic(x0, sigma, *args, **kwargs):
-  z34indices = [i for i, monomial in enumerate(getpolynomialndmonomials(4, 4)) if monomial["z"] >= 3]
+  z34indices = [i for i, monomial in enumerate(HomogeneousPolynomialNd(4, 5, [1]*70).monomialswithoutcoeffs) if monomial["z"] >= 3]
 
   assert np.all(x0[z34indices] == 0)
 
@@ -625,7 +638,7 @@ def cuttingplanemethod4dquartic_4thvariablezerobeyondquadratic(x0, sigma, *args,
   return result
 
 def cuttingplanemethod4dquartic_4thvariablezerobeyondquadratic_1stvariableonlyeven(x0, sigma, *args, **kwargs):
-  z34indices = [i for i, monomial in enumerate(m for m in getpolynomialndmonomials(4, 4) if m["w"]%2==0) if monomial["z"] >= 3]
+  z34indices = [i for i, monomial in enumerate(m for m in HomogeneousPolynomialNd(4, 5, [1]*70).monomialswithoutcoeffs if m["w"]%2==0) if monomial["z"] >= 3]
 
   assert np.all(x0[z34indices] == 0)
 
@@ -643,7 +656,7 @@ def cuttingplanemethod4dquartic_4thvariablezerobeyondquadratic_1stvariableonlyev
   return result
 
 def cuttingplanemethod4dquartic_4thvariablezerocubic(x0, sigma, *args, **kwargs):
-  z34indices = [i for i, monomial in enumerate(getpolynomialndmonomials(4, 4)) if monomial["z"] == 3]
+  z34indices = [i for i, monomial in enumerate(HomogeneousPolynomialNd(4, 5, [1]*70).monomialswithoutcoeffs) if monomial["z"] == 3]
 
   assert np.all(x0[z34indices] == 0)
 
@@ -661,7 +674,7 @@ def cuttingplanemethod4dquartic_4thvariablezerocubic(x0, sigma, *args, **kwargs)
   return result
 
 def cuttingplanemethod4dquartic_4thvariablezerocubic_1stvariableonlyeven(x0, sigma, *args, **kwargs):
-  z34indices = [i for i, monomial in enumerate(m for m in getpolynomialndmonomials(4, 4) if m["w"]%2==0) and monomial["z"] == 3]
+  z34indices = [i for i, monomial in enumerate(m for m in HomogeneousPolynomialNd(4, 5, [1]*70).monomialswithoutcoeffs if m["w"]%2==0) and monomial["z"] == 3]
 
   assert np.all(x0[z34indices] == 0)
 
@@ -679,7 +692,7 @@ def cuttingplanemethod4dquartic_4thvariablezerocubic_1stvariableonlyeven(x0, sig
   return result
 
 def cuttingplanemethod4dquartic_4thvariablesmallbeyondquadratic(x0, sigma, *args, **kwargs):
-  z34indices = [i for i, monomial in enumerate(getpolynomialndmonomials(4, 4)) if monomial["z"] >= 3]
+  z34indices = [i for i, monomial in enumerate(HomogeneousPolynomialNd(4, 5, [1]*70).monomialswithoutcoeffs) if monomial["z"] >= 3]
 
   x0withoutz34 = np.array([_ for i, _ in enumerate(x0) if i not in z34indices])
   sigmawithoutz34 = np.array([_ for i, _ in enumerate(sigma) if i not in z34indices])
@@ -731,7 +744,7 @@ def cuttingplanemethod4dquartic_4thvariablesmallbeyondquadratic_step2(*args, **k
   return CuttingPlaneMethod4DQuartic_4thVariableSmallBeyondQuadratic_Step2(*args, **kwargs).run()
 
 def cuttingplanemethod4dquartic_4thvariablesmallbeyondquadratic_1stvariableonlyeven(x0, sigma, *args, **kwargs):
-  z34indices = [i for i, monomial in enumerate(m for m in getpolynomialndmonomials(4, 4) if m["w"]%2==0) if monomial["z"] >= 3]
+  z34indices = [i for i, monomial in enumerate(m for m in HomogeneousPolynomialNd(4, 5, [1]*70).monomialswithoutcoeffs if m["w"]%2==0) if monomial["z"] >= 3]
 
   x0withoutz34 = np.array([_ for i, _ in enumerate(x0) if i not in z34indices])
   sigmawithoutz34 = np.array([_ for i, _ in enumerate(sigma) if i not in z34indices])

@@ -310,6 +310,8 @@ class PolynomialBase(object):
 
   @abc.abstractproperty
   def monomials(self): "list of Monomial objects"
+  @property
+  def monomialswithoutcoeffs(self): return [m.variablepowers for m in self.monomials]
 
   @property
   def nmonomials(self): return self.__nmonomials
@@ -749,8 +751,7 @@ class PolynomialBaseProvideCoeffs(PolynomialBase):
   @abc.abstractproperty
   def monomialswithoutcoeffs(self):
     """
-    should be a list or generator of Counters, e.g. Counter({"x": 1, "y": 2} for the x*y^2 term,
-    or something that can be passed as an argument to Counter, e.g. "xyy"
+    should be a list or generator of VariablePowers
     __init__ will expect coefficients to be in the order corresponding to these terms
     """
 
@@ -761,17 +762,20 @@ class PolynomialBaseProvideCoeffs(PolynomialBase):
         raise IndexError("Provided {} coefficients, need {}".format(len(self.__coeffs), len(list(self.monomialswithoutcoeffs))))
       yield Monomial(coeff, monomial)
 
-class PolynomialNd(PolynomialBaseProvideCoeffs, PolynomialBaseStandardLetters):
+class HomogeneousPolynomialNd(PolynomialBaseProvideCoeffs, PolynomialBaseStandardLetters):
   def __init__(self, d, n, coeffs):
     self.__degree = d
     self.__nvariables = n
-    super(PolynomialNd, self).__init__(coeffs)
+    super(HomogeneousPolynomialNd, self).__init__(coeffs)
   @property
   def monomialswithoutcoeffs(self):
     variableletters = getnvariableletters(self.__nvariables)
-    return itertools.combinations_with_replacement(variableletters, self.__degree)
+    return [VariablePowers(_) for _ in itertools.combinations_with_replacement(variableletters, self.__degree)]
   @property
   def dehomogenizevariablesorder(self): return self.variableletters
+
+def PolynomialNd(d, n, coeffs):
+  return HomogeneousPolynomialNd(d, n+1, coeffs).dehomogenize()
 
 class DoubleQuadratic(PolynomialBaseProvideCoeffs):
   def __init__(self, n1, n2, coeffs):
@@ -788,10 +792,10 @@ class DoubleQuadratic(PolynomialBaseProvideCoeffs):
     return getnvariableletters(self.__nvariables2)
   @property
   def monomialswithoutcoeffs(self):
-    return (sum(_, ()) for _ in itertools.product(
+    return [VariablePowers(sum(_, ())) for _ in itertools.product(
       itertools.combinations_with_replacement(self.variables1, self.__degree1),
       itertools.combinations_with_replacement(self.variables2, self.__degree2),
-    ))
+    )]
   @property
   def dehomogenizevariablesorder(self):
     vv1 = iter(self.variables1)
@@ -870,7 +874,6 @@ def permutations_differentonesfirst(iterable):
     done.append(best)
     permutations.remove(best)
     yield best
-
 
 if __name__ == "__main__":
   coeffs = np.array([1] * 45)
