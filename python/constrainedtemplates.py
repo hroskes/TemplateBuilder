@@ -1,6 +1,6 @@
 from __future__ import print_function
 
-import abc, copy, functools, itertools, logging, multiprocessing, textwrap, sys, traceback
+import abc, copy, functools, itertools, logging, multiprocessing, textwrap, socket, sys, traceback
 
 import numpy as np
 from scipy import optimize
@@ -46,6 +46,8 @@ class ConstrainedTemplatesBase(object):
     logger.setLevel(logging.INFO)
 
     self.__nthreads = nthreads
+
+    if "bc-login" in socket.gethostname() and nthreads > 1: raise RuntimeError("Can't run multithreaded on MARCC login nodes")
 
   @property
   def templates(self): 
