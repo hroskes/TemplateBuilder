@@ -154,7 +154,7 @@ class CuttingPlaneMethodBase(object):
     return result
 
   def __findmultiplycoeffs(self, diagF, verbose=False):
-    monomials = self.monomials
+    monomials = self.monomials()
 
     logdiagF = np.log(diagF)
     logmultiplyvariables = collections.defaultdict(cp.Variable)
@@ -433,9 +433,12 @@ class CuttingPlaneMethod_InsertZeroAtIndices(CuttingPlaneMethodMultiDimensional)
   @abc.abstractproperty
   def insertzeroatindices(self): "can be a class member"
 
-  @property
-  def monomials(self):
-    result = list(super(CuttingPlaneMethod_InsertZeroAtIndices, self).monomials)
+  def monomials(self, coeffs=None):
+    if coeffs is None: coeffs = [1] * self.xsize
+    coeffs = iter(coeffs)
+    newcoeffs = np.array([0 if i in self.insertzeroatindices else next(coeffs) for i in xrange(self.xsize)])
+    for remaining in coeffs: assert False
+    result = super(CuttingPlaneMethod_InsertZeroAtIndices, self).monomials(coeffs=newcoeffs)
     for _ in sorted(self.insertzeroatindices, reverse=True):
       del result[_]
     return result
