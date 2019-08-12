@@ -1,4 +1,4 @@
-import abc, contextlib, itertools, multiprocessing, os, re, subprocess32 as subprocess
+import abc, contextlib, itertools, multiprocessing, os, re, socket, subprocess32 as subprocess
 
 import numpy as np
 
@@ -180,6 +180,7 @@ def addtocpath(path):
     yield
 
 def runhom4ps(stdin, whichcmdline, verbose=False, timeout=10):
+  if "bc-login" in socket.gethostname(): raise RuntimeError("Can't run hom4ps on MARCC login nodes")
   cmdline = getcmdline(whichcmdline)
   if verbose: print stdin
 
