@@ -561,7 +561,7 @@ class TwoByThreeParameterggHVV(ConstrainedTemplatesWithFit):
     "GI_l",
   )
   pureindices = ()
-  cuttingplanefunction = staticmethod(cuttingplanemethod2dquadraticby3dquadratic)
+  #cuttingplanefunction = staticmethod(cuttingplanemethod2dquadraticby3dquadratic) #doesn't work
   cuttingplanehaspermutations = True
   defaultmaxiter = 2000
 
